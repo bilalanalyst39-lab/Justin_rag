@@ -1,0 +1,27 @@
+{
+  "files": {},
+  "rss_feeds": {
+    "https://media.rss.com/nside/feed.xml": {
+      "title": "Huddle Up with nSide",
+      "last_fetched": "882ef8f6-e46c-4301-a157-5fe630a6839a",
+      "processed_episodes": 3
+    }
+  },
+  "processed_episodes": {
+    "af8f66f5-9b47-4bd5-b1da-bc63c915a9c1": {
+      "feed_url": "https://media.rss.com/nside/feed.xml",
+      "title": "Funding School Safety: Insights on the STOP Grant Process ft. Jessica Harrison",
+      "processed_time": "e71a840b-74ad-444b-819c-9498610617d3"
+    },
+    "8a18b87c-6683-4f19-8c6c-cfba792d7bb8": {
+      "feed_url": "https://media.rss.com/nside/feed.xml",
+      "title": "The Power of Relationships in School Safety ft. John and Heather Calvert",
+      "processed_time": "9cd5e1b6-2911-4611-9792-71c7c048d603"
+    },
+    "04e5ee49-234f-fe69-96d1-190b05d45c10": {
+      "feed_url": "https://media.rss.com/nside/feed.xml",
+      "title": "Biological Hazards Planning and Mental Health Secondary Trauma of Social Distancing",
+      "processed_time": "f3700fba-91b2-4317-919b-50abea9a1051"
+    }
+  }
+}

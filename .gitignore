@@ -1,0 +1,20 @@
+# Ignore large PDF files
+*.pdf
+
+# Ignore large directories
+permanent_transcripts/
+downloaded_audios/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE files
+.vscode/
+.idea/
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
