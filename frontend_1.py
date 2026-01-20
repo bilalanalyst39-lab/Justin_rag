@@ -1,10 +1,9 @@
 import streamlit as st
 import requests
 import time
-import os
 
 # --- CONFIGURATION ---
-BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+BACKEND_URL = "http://127.0.0.1:8000"
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -129,6 +128,62 @@ st.markdown("""
         box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         margin-bottom: 20px;
     }
+    
+    /* Source citation styling */
+    .source-box {
+        background-color: #f8f9fa;
+        border-left: 4px solid #10a37f;
+        padding: 12px 16px;
+        margin: 12px 0;
+        border-radius: 6px;
+    }
+    
+    .source-title {
+        font-weight: 600;
+        color: #1f2937;
+        margin-bottom: 8px;
+    }
+    
+    .source-link {
+        color: #10a37f;
+        text-decoration: none;
+        font-size: 14px;
+        margin-right: 12px;
+    }
+    
+    .source-link:hover {
+        text-decoration: underline;
+    }
+    
+    .episode-badge {
+        display: inline-block;
+        background-color: #10a37f;
+        color: white;
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        margin: 4px;
+        font-weight: 500;
+    }
+    
+    /* Supabase link styling */
+    .supabase-link-box {
+        background-color: #e0f2fe;
+        border: 1px solid #38bdf8;
+        border-radius: 8px;
+        padding: 12px;
+        margin: 12px 0;
+    }
+    
+    .supabase-link-box a {
+        color: #0284c7;
+        font-weight: 500;
+        text-decoration: none;
+    }
+    
+    .supabase-link-box a:hover {
+        text-decoration: underline;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -137,6 +192,58 @@ if "ui_messages" not in st.session_state:
     st.session_state.ui_messages = []
 if "current_tab" not in st.session_state:
     st.session_state.current_tab = "chat"
+
+# --- HELPER FUNCTIONS ---
+def display_sources(sources, episode_titles):
+    """Display source citations with Supabase links"""
+    if episode_titles:
+        st.markdown("---")
+        st.markdown("**📚 Referenced Episodes:**")
+        for title in episode_titles[:5]:  # Show top 5 episodes
+            st.markdown(f'<span class="episode-badge">🎙️ {title}</span>', unsafe_allow_html=True)
+    
+    if sources:
+        st.markdown("---")
+        with st.expander("📖 View Sources & Downloads", expanded=False):
+            for idx, source in enumerate(sources[:5], 1):  # Show top 5 sources
+                st.markdown(f'<div class="source-box">', unsafe_allow_html=True)
+                
+                episode_title = source.get('episode_title', 'Unknown')
+                feed_title = source.get('feed_title', '')
+                content_type = source.get('content_type', '')
+                
+                st.markdown(f'<div class="source-title">📄 Source {idx}: {episode_title}</div>', unsafe_allow_html=True)
+                
+                if feed_title:
+                    st.markdown(f"**Podcast:** {feed_title}")
+                
+                if content_type:
+                    st.markdown(f"**Type:** {content_type}")
+                
+                # Display Supabase links
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    pdf_url = source.get('supabase_pdf_url')
+                    if pdf_url:
+                        st.markdown(f'<a href="{pdf_url}" target="_blank" class="source-link">📥 Download Transcript PDF</a>', unsafe_allow_html=True)
+                
+                with col2:
+                    audio_url = source.get('supabase_audio_url')
+                    if audio_url:
+                        st.markdown(f'<a href="{audio_url}" target="_blank" class="source-link">🎵 Download Audio</a>', unsafe_allow_html=True)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown("")
+
+def display_chat_message(role, content, sources=None, episode_titles=None):
+    """Display chat message with optional sources"""
+    with st.chat_message(role, avatar="👤" if role == "user" else "🤖"):
+        st.markdown(content)
+        
+        # Display sources if available (only for assistant messages)
+        if role == "assistant" and (sources or episode_titles):
+            display_sources(sources or [], episode_titles or [])
 
 # --- SIDEBAR (Only Navigation) ---
 with st.sidebar:
@@ -158,9 +265,20 @@ with st.sidebar:
     if st.session_state.current_tab == "chat":
         st.markdown("### 💬 Chat Mode")
         st.markdown("Ask questions about your uploaded documents.")
+        st.markdown("")
+        st.markdown("**Features:**")
+        st.markdown("- 🎙️ Speaker-aware responses")
+        st.markdown("- 📚 Episode citations")
+        st.markdown("- 📥 Download sources")
     else:
         st.markdown("### 📚 Knowledge Base")
         st.markdown("Upload documents and RSS feeds to build your knowledge base.")
+        st.markdown("")
+        st.markdown("**Supported:**")
+        st.markdown("- 📄 PDF documents")
+        st.markdown("- 📝 Text files")
+        st.markdown("- 🎙️ Podcast RSS feeds")
+        st.markdown("- 👥 Speaker diarization")
 
 # --- MAIN CONTENT AREA ---
 if st.session_state.current_tab == "chat":
@@ -170,16 +288,20 @@ if st.session_state.current_tab == "chat":
     
     # Display chat history
     for m in st.session_state.ui_messages:
-        with st.chat_message(m["role"], avatar="👤" if m["role"] == "user" else "🤖"):
-            st.markdown(m["content"])
+        display_chat_message(
+            m["role"], 
+            m["content"],
+            sources=m.get("sources"),
+            episode_titles=m.get("episode_titles")
+        )
     
     # Chat input at bottom
     if prompt := st.chat_input("Type your message here..."):
         # Add user message
-        st.session_state.ui_messages.append({"role": "user", "content": prompt})
+        user_message = {"role": "user", "content": prompt}
+        st.session_state.ui_messages.append(user_message)
         
-        with st.chat_message("user", avatar="👤"):
-            st.markdown(prompt)
+        display_chat_message("user", prompt)
         
         # Get AI response
         with st.chat_message("assistant", avatar="🤖"):
@@ -189,15 +311,35 @@ if st.session_state.current_tab == "chat":
             try:
                 payload = {
                     "message": prompt,
-                    "history": st.session_state.ui_messages[:1]
+                    "history": st.session_state.ui_messages[:-1]  # Exclude current message
                 }
                 
                 res = requests.post(f"{BACKEND_URL}/chat", json=payload, timeout=60)
                 
                 if res.status_code == 200:
-                    answer = res.json().get("answer", "No response received.")
-                    message_placeholder.markdown(answer)
-                    st.session_state.ui_messages.append({"role": "assistant", "content": answer})
+                    response_data = res.json()
+                    answer = response_data.get("answer", "No response received.")
+                    sources = response_data.get("sources", [])
+                    episode_titles = response_data.get("episode_titles", [])
+                    
+                    # Clear thinking message
+                    message_placeholder.empty()
+                    
+                    # Display answer
+                    st.markdown(answer)
+                    
+                    # Display sources
+                    if sources or episode_titles:
+                        display_sources(sources, episode_titles)
+                    
+                    # Save to history with sources
+                    assistant_message = {
+                        "role": "assistant", 
+                        "content": answer,
+                        "sources": sources,
+                        "episode_titles": episode_titles
+                    }
+                    st.session_state.ui_messages.append(assistant_message)
                 else:
                     error_msg = "❌ Backend error occurred. Please try again."
                     message_placeholder.markdown(error_msg)
@@ -256,6 +398,19 @@ else:
                             st.metric("📊 Chunks", data.get('chunks_count', 'N/A'))
                         with col_c:
                             st.metric("✅ Status", "Processed")
+                        
+                        # Display Supabase URL if available
+                        supabase_url = data.get("supabase_url")
+                        if supabase_url:
+                            st.markdown("---")
+                            st.markdown("**☁️ Cloud Storage:**")
+                            st.markdown(
+                                f'<div class="supabase-link-box">'
+                                f'📥 <a href="{supabase_url}" target="_blank">Download from Cloud Storage</a>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+                            st.info("💡 Your document is securely stored in the cloud and ready to be queried!")
                             
                     elif data.get("duplicate"):
                         st.warning("⚠️ " + data.get('message', 'File already exists'))
@@ -268,6 +423,7 @@ else:
     # TAB 2: RSS FEED
     with upload_tab2:
         st.markdown("### Add RSS Feeds")
+        st.info("🎙️ Podcast episodes will be transcribed with **speaker diarization** and stored in the cloud")
         
         # Feed mode selection
         feed_mode = st.radio(
@@ -353,8 +509,12 @@ else:
                                     st.metric("📋 Already Done", data.get("already_processed", 0))
                                 
                                 if task_id:
-                                    # Live counters — UPDATED METRICS
-                                    mcol1, mcol2, mcol3, mcol4 = st.columns(4)  # ← 4 columns now
+                                    st.markdown("---")
+                                    st.markdown("### 🔄 Processing Progress")
+                                    st.info("🎙️ Transcribing with speaker diarization & uploading to cloud storage...")
+                                    
+                                    # Live counters with 4 metrics
+                                    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
                                     transcribed_box = mcol1.empty()
                                     metadata_box = mcol2.empty()
                                     failed_box = mcol3.empty()
@@ -374,13 +534,13 @@ else:
                                             state = status_data.get("status", "")
 
                                             success_n = status_data.get("success", 0)
-                                            metadata_n = status_data.get("metadata", 0)  # ← NEW
+                                            metadata_n = status_data.get("metadata", 0)
                                             failed_n = status_data.get("unsuccessful", 0)
 
                                             transcribed_box.metric("✅ Transcribed", success_n)
-                                            metadata_box.metric("📄 Metadata", metadata_n)
+                                            metadata_box.metric("📄 Metadata Only", metadata_n)
                                             failed_box.metric("❌ Failed", failed_n)
-                                            total_box.metric("📦 Total", current)
+                                            total_box.metric("📦 Processed", current)
                                             
                                             if total > 0:
                                                 progress_val = min(current / total, 1.0)
@@ -389,17 +549,31 @@ else:
                                             
                                             if state == "completed":
                                                 is_done = True
-                                                status_text.success(f"🎊 Completed! {success_n} transcribed, {metadata_n} metadata, {failed_n} failed (total {current}).")
+                                                progress_bar.progress(1.0)
+                                                status_text.success(
+                                                    f"🎊 Completed! "
+                                                    f"✅ {success_n} transcribed with speakers | "
+                                                    f"📄 {metadata_n} metadata only | "
+                                                    f"❌ {failed_n} failed"
+                                                )
                                                 
-                                        except Exception:
-                                            pass
+                                                st.balloons()
+                                                
+                                                st.markdown("---")
+                                                st.success("✨ All episodes are now in your knowledge base and ready to query!")
+                                                
+                                        except Exception as e:
+                                            st.error(f"Status check error: {e}")
                                         
                                         time.sleep(2)
                         else:
-                            # Multiple feeds processing (unchanged)
+                            # Multiple feeds processing
                             st.success(f"✅ Processing {len(urls_to_process)} feeds")
                             
                             if task_id:
+                                st.markdown("---")
+                                st.markdown("### 🔄 Processing Progress")
+                                
                                 progress_bar = st.progress(0)
                                 status_text = st.empty()
                                 results_expander = st.expander("📊 Processing Results", expanded=True)
@@ -427,7 +601,11 @@ else:
                                                 for result in results:
                                                     if result.get("success"):
                                                         st.success(f"✅ {result.get('feed_title', 'Unknown')}")
-                                                        st.write(f"   - New Episodes: {result.get('new_episodes', 0)}")
+                                                        col1, col2 = st.columns(2)
+                                                        with col1:
+                                                            st.write(f"   📚 New Episodes: {result.get('new_episodes', 0)}")
+                                                        with col2:
+                                                            st.write(f"   ✨ Processed: {result.get('episodes_processed', 0)}")
                                                     else:
                                                         st.error(f"❌ Failed: {result.get('feed_url', '')}")
                                         
@@ -437,14 +615,15 @@ else:
                                             
                                             col1, col2, col3 = st.columns(3)
                                             with col1:
-                                                st.metric("✅ Success", successful)
+                                                st.metric("✅ Successful Feeds", successful)
                                             with col2:
-                                                st.metric("❌ Unsuccessful", len(results) - successful)
+                                                st.metric("❌ Failed Feeds", len(results) - successful)
                                             with col3:
                                                 total_episodes = sum(r.get('new_episodes', 0) for r in results if r.get("success"))
-                                                st.metric("📚 Episodes", total_episodes)
+                                                st.metric("📚 Total Episodes", total_episodes)
                                             
                                             status_text.success("🎊 All feeds processed!")
+                                            st.balloons()
                                             
                                     except Exception as e:
                                         st.error(f"❌ Error: {e}")
@@ -457,3 +636,13 @@ else:
                     st.error("❌ Could not connect to backend. Is it running?")
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
+
+# --- FOOTER ---
+st.markdown("---")
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown("🤖 **RAG Knowledge Base System**")
+with col2:
+    st.markdown("☁️ **Powered by Supabase Storage**")
+with col3:
+    st.markdown("🎙️ **Speaker Diarization Enabled**")

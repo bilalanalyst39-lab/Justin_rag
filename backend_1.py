@@ -10,6 +10,7 @@ import json
 import socket
 from typing import List, Literal, Dict, Optional
 from typing_extensions import TypedDict
+from io import BytesIO
 
 import assemblyai as aai
 from bs4 import BeautifulSoup
@@ -19,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 from fpdf import FPDF
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel
+from supabase import create_client, Client
 
 # LangChain & LangGraph
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -41,18 +43,185 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "rag-index")
-TRANSCRIPT_OUTPUT_DIR = "permanent_transcripts"
-AUDIO_OUTPUT_DIR = "downloaded_audios"
-os.makedirs(TRANSCRIPT_OUTPUT_DIR, exist_ok=True)
-os.makedirs(AUDIO_OUTPUT_DIR, exist_ok=True)
+
+# Supabase Configuration
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_BUCKET_AUDIO = os.getenv("SUPABASE_BUCKET_AUDIO", "audio-files")
+SUPABASE_BUCKET_TRANSCRIPTS = os.getenv("SUPABASE_BUCKET_TRANSCRIPTS", "transcripts")
+
+# Temporary directories (for processing only, not permanent storage)
+TEMP_TRANSCRIPT_DIR = "temp_transcripts"
+TEMP_AUDIO_DIR = "temp_audios"
+os.makedirs(TEMP_TRANSCRIPT_DIR, exist_ok=True)
+os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
 
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY not found in environment variables.")
 
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables.")
+
 print(f"✅ AssemblyAI Key loaded: {bool(ASSEMBLYAI_API_KEY)}")
 print(f"🔑 Key length: {len(ASSEMBLYAI_API_KEY) if ASSEMBLYAI_API_KEY else 0}")
+print(f"✅ Supabase configured: {SUPABASE_URL}")
 
 aai.settings.api_key = ASSEMBLYAI_API_KEY
+
+# --- SUPABASE INITIALIZATION ---
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- SUPABASE HELPER FUNCTIONS ---
+class SupabaseManager:
+    def __init__(self):
+        self.client = supabase
+        self.audio_bucket = SUPABASE_BUCKET_AUDIO
+        self.transcript_bucket = SUPABASE_BUCKET_TRANSCRIPTS
+        self._ensure_buckets_exist()
+    
+    def _ensure_buckets_exist(self):
+        """Ensure storage buckets exist"""
+        try:
+            # List existing buckets
+            buckets = self.client.storage.list_buckets()
+            bucket_names = [b.name for b in buckets]
+            
+            # Create audio bucket if not exists
+            if self.audio_bucket not in bucket_names:
+                self.client.storage.create_bucket(
+                    self.audio_bucket,
+                    options={"public": False}
+                )
+                print(f"✅ Created Supabase bucket: {self.audio_bucket}")
+            
+            # Create transcript bucket if not exists
+            if self.transcript_bucket not in bucket_names:
+                self.client.storage.create_bucket(
+                    self.transcript_bucket,
+                    options={"public": False}
+                )
+                print(f"✅ Created Supabase bucket: {self.transcript_bucket}")
+                
+        except Exception as e:
+            print(f"⚠️ Bucket creation info: {e}")
+    
+    def upload_audio(self, file_path: str, filename: str) -> Dict:
+        """Upload audio file to Supabase storage"""
+        try:
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+            
+            # Upload to Supabase
+            result = self.client.storage.from_(self.audio_bucket).upload(
+                f"audios/{filename}",
+                file_data,
+                {"content-type": "audio/mpeg"}
+            )
+            
+            # Get public URL
+            public_url = self.client.storage.from_(self.audio_bucket).get_public_url(f"audios/{filename}")
+            
+            print(f"✅ Uploaded audio to Supabase: {filename}")
+            return {
+                "success": True,
+                "url": public_url,
+                "path": f"audios/{filename}",
+                "bucket": self.audio_bucket
+            }
+        except Exception as e:
+            print(f"❌ Error uploading audio to Supabase: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def upload_pdf(self, file_path: str, filename: str) -> Dict:
+        """Upload PDF file to Supabase storage"""
+        try:
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+            
+            # Upload to Supabase
+            result = self.client.storage.from_(self.transcript_bucket).upload(
+                f"pdfs/{filename}",
+                file_data,
+                {"content-type": "application/pdf"}
+            )
+            
+            # Get public URL
+            public_url = self.client.storage.from_(self.transcript_bucket).get_public_url(f"pdfs/{filename}")
+            
+            print(f"✅ Uploaded PDF to Supabase: {filename}")
+            return {
+                "success": True,
+                "url": public_url,
+                "path": f"pdfs/{filename}",
+                "bucket": self.transcript_bucket
+            }
+        except Exception as e:
+            print(f"❌ Error uploading PDF to Supabase: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def upload_pdf_from_bytes(self, pdf_bytes: bytes, filename: str) -> Dict:
+        """Upload PDF from bytes to Supabase storage"""
+        try:
+            # Upload to Supabase
+            result = self.client.storage.from_(self.transcript_bucket).upload(
+                f"pdfs/{filename}",
+                pdf_bytes,
+                {"content-type": "application/pdf"}
+            )
+            
+            # Get public URL
+            public_url = self.client.storage.from_(self.transcript_bucket).get_public_url(f"pdfs/{filename}")
+            
+            print(f"✅ Uploaded PDF to Supabase: {filename}")
+            return {
+                "success": True,
+                "url": public_url,
+                "path": f"pdfs/{filename}",
+                "bucket": self.transcript_bucket
+            }
+        except Exception as e:
+            print(f"❌ Error uploading PDF to Supabase: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def delete_audio(self, filename: str) -> bool:
+        """Delete audio file from Supabase"""
+        try:
+            self.client.storage.from_(self.audio_bucket).remove([f"audios/{filename}"])
+            print(f"🗑️ Deleted audio from Supabase: {filename}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting audio: {e}")
+            return False
+    
+    def delete_pdf(self, filename: str) -> bool:
+        """Delete PDF file from Supabase"""
+        try:
+            self.client.storage.from_(self.transcript_bucket).remove([f"pdfs/{filename}"])
+            print(f"🗑️ Deleted PDF from Supabase: {filename}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting PDF: {e}")
+            return False
+    
+    def get_audio_url(self, filename: str) -> str:
+        """Get public URL for audio file"""
+        return self.client.storage.from_(self.audio_bucket).get_public_url(f"audios/{filename}")
+    
+    def get_pdf_url(self, filename: str) -> str:
+        """Get public URL for PDF file"""
+        return self.client.storage.from_(self.transcript_bucket).get_public_url(f"pdfs/{filename}")
+
+# Initialize Supabase Manager
+supabase_manager = SupabaseManager()
 
 # --- NETWORK VALIDATION ---
 def validate_network_connectivity():
@@ -89,7 +258,7 @@ def get_pinecone_index():
         return None
 
 
-app = FastAPI(title="Professional Dual-Agent RAG with Speaker Diarization")
+app = FastAPI(title="Professional Dual-Agent RAG with Speaker Diarization & Supabase")
 
 app.add_middleware(
     CORSMiddleware,
@@ -162,12 +331,13 @@ class MetadataManager:
                 return True
         return False
     
-    def add_file(self, filename: str, file_hash: str, chunks_count: int):
+    def add_file(self, filename: str, file_hash: str, chunks_count: int, supabase_url: str = None):
         """Add file to metadata"""
         self.data["files"][filename] = {
             "hash": file_hash,
             "upload_time": str(uuid.uuid4()),
-            "chunks_count": chunks_count
+            "chunks_count": chunks_count,
+            "supabase_url": supabase_url
         }
         self.save_metadata()
     
@@ -192,12 +362,14 @@ class MetadataManager:
         }
         self.save_metadata()
     
-    def add_episode(self, feed_url: str, episode_guid: str, title: str):
+    def add_episode(self, feed_url: str, episode_guid: str, title: str, audio_url: str = None, pdf_url: str = None):
         """Add episode to processed episodes"""
         self.data["processed_episodes"][episode_guid] = {
             "feed_url": feed_url,
             "title": title,
-            "processed_time": str(uuid.uuid4())
+            "processed_time": str(uuid.uuid4()),
+            "audio_url": audio_url,
+            "pdf_url": pdf_url
         }
         
         if feed_url in self.data["rss_feeds"]:
@@ -389,9 +561,9 @@ def get_dynamic_splitter(text_content: str):
         separators=["\n\n", "\n", " ", ""]
     )
 
-# ✅ UPDATED: Speaker-aware PDF generation
-def transcript_to_pdf_with_speakers(transcript_obj, filename: str, output_path: str):
-    """Create PDF with speaker diarization labels"""
+# ✅ UPDATED: Speaker-aware PDF generation with Supabase upload
+def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_supabase: bool = True) -> Dict:
+    """Create PDF with speaker diarization labels and upload to Supabase"""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=10)
@@ -421,9 +593,30 @@ def transcript_to_pdf_with_speakers(transcript_obj, filename: str, output_path: 
         pdf.set_font("Arial", size=10)
         pdf.multi_cell(0, 8, txt=transcript_obj.text)
     
-    pdf_path = os.path.join(output_path, f"{filename}.pdf")
-    pdf.output(pdf_path)
-    return pdf_path
+    # Save to temporary file first
+    temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
+    pdf.output(temp_pdf_path)
+    
+    result = {
+        "local_path": temp_pdf_path,
+        "supabase_uploaded": False
+    }
+    
+    # Upload to Supabase if requested
+    if upload_to_supabase:
+        upload_result = supabase_manager.upload_pdf(temp_pdf_path, f"{filename}.pdf")
+        if upload_result["success"]:
+            result["supabase_uploaded"] = True
+            result["supabase_url"] = upload_result["url"]
+            result["supabase_path"] = upload_result["path"]
+            
+            # Clean up local temp file after successful upload
+            try:
+                os.remove(temp_pdf_path)
+            except:
+                pass
+    
+    return result
 
 # ✅ UPDATED: Format transcript with speaker labels for embedding
 def format_transcript_with_speakers(transcript_obj) -> str:
@@ -437,15 +630,35 @@ def format_transcript_with_speakers(transcript_obj) -> str:
         # Fallback to plain text
         return transcript_obj.text
 
-def transcript_to_pdf(text: str, filename: str, output_path: str):
-    """Legacy function for simple text to PDF"""
+def transcript_to_pdf(text: str, filename: str, upload_to_supabase: bool = True) -> Dict:
+    """Legacy function for simple text to PDF with Supabase upload"""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
     pdf.multi_cell(0, 10, txt=text)
-    pdf_path = os.path.join(output_path, f"{filename}.pdf")
-    pdf.output(pdf_path)
-    return pdf_path
+    
+    temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
+    pdf.output(temp_pdf_path)
+    
+    result = {
+        "local_path": temp_pdf_path,
+        "supabase_uploaded": False
+    }
+    
+    if upload_to_supabase:
+        upload_result = supabase_manager.upload_pdf(temp_pdf_path, f"{filename}.pdf")
+        if upload_result["success"]:
+            result["supabase_uploaded"] = True
+            result["supabase_url"] = upload_result["url"]
+            result["supabase_path"] = upload_result["path"]
+            
+            # Clean up local temp file
+            try:
+                os.remove(temp_pdf_path)
+            except:
+                pass
+    
+    return result
 
 def save_text_to_pdf(text: str, output_path: str):
     """Saves transcription text into a professional PDF format."""
@@ -552,25 +765,57 @@ def process_in_batches_task(file_links: list, task_id: str):
                 unique_suffix = uuid.uuid4().hex[:4]
                 base_name = os.path.basename(parsed_path) or f"web_{unique_suffix}"
                 text = ""
+                supabase_pdf_url = None
 
                 if ext in ["mp3", "wav", "m4a"]:
-                    # ✅ Enable speaker diarization
-                    config = aai.TranscriptionConfig(speaker_labels=True)
-                    transcriber = aai.Transcriber()
-                    transcript = transcriber.transcribe(link, config=config)
+                    # Download to temp, transcribe, then upload to Supabase
+                    temp_audio_path = os.path.join(temp_dir, f"{base_name}.{ext}")
                     
-                    if transcript.status != aai.TranscriptStatus.error:
-                        # Format with speaker labels
-                        text = format_transcript_with_speakers(transcript)
-                        pdf_path = transcript_to_pdf_with_speakers(transcript, base_name, temp_dir)
-                        shutil.copy(pdf_path, os.path.join(TRANSCRIPT_OUTPUT_DIR, f"{base_name}.pdf"))
+                    try:
+                        resp = requests.get(link, timeout=120, stream=True)
+                        with open(temp_audio_path, 'wb') as f:
+                            for chunk in resp.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                        
+                        # Upload audio to Supabase
+                        audio_upload = supabase_manager.upload_audio(temp_audio_path, f"{base_name}.{ext}")
+                        
+                        # Transcribe with speaker diarization
+                        config = aai.TranscriptionConfig(speaker_labels=True)
+                        transcriber = aai.Transcriber()
+                        transcript = transcriber.transcribe(temp_audio_path, config=config)
+                        
+                        if transcript.status != aai.TranscriptStatus.error:
+                            # Format with speaker labels
+                            text = format_transcript_with_speakers(transcript)
+                            
+                            # Create and upload PDF to Supabase
+                            pdf_result = transcript_to_pdf_with_speakers(transcript, base_name, upload_to_supabase=True)
+                            if pdf_result.get("supabase_uploaded"):
+                                supabase_pdf_url = pdf_result["supabase_url"]
+                        
+                        # Clean up temp audio
+                        os.remove(temp_audio_path)
+                        
+                    except Exception as audio_err:
+                        print(f"Audio processing error: {audio_err}")
                 
                 elif ext == 'pdf':
                     resp = requests.get(link, timeout=30)
                     local_path = os.path.join(temp_dir, f"{base_name}.pdf")
-                    with open(local_path, "wb") as f: f.write(resp.content)
+                    with open(local_path, "wb") as f: 
+                        f.write(resp.content)
+                    
                     text = extract_text_from_pdf(local_path)
-                    shutil.copy(local_path, os.path.join(TRANSCRIPT_OUTPUT_DIR, f"{base_name}.pdf"))
+                    
+                    # Upload PDF to Supabase
+                    pdf_upload = supabase_manager.upload_pdf(local_path, f"{base_name}.pdf")
+                    if pdf_upload["success"]:
+                        supabase_pdf_url = pdf_upload["url"]
+                    
+                    # Clean up temp file
+                    os.remove(local_path)
 
                 else:
                     resp = requests.get(link, timeout=15)
@@ -579,12 +824,17 @@ def process_in_batches_task(file_links: list, task_id: str):
                     text = soup.get_text(separator=' ', strip=True)
                     
                     if text.strip():
-                        pdf_path = transcript_to_pdf(text, base_name, temp_dir)
-                        shutil.copy(pdf_path, os.path.join(TRANSCRIPT_OUTPUT_DIR, f"{base_name}_web.pdf"))
+                        pdf_result = transcript_to_pdf(text, f"{base_name}_web", upload_to_supabase=True)
+                        if pdf_result.get("supabase_uploaded"):
+                            supabase_pdf_url = pdf_result["supabase_url"]
 
                 if text.strip():
                     splitter = get_dynamic_splitter(text)
-                    all_chunks_in_batch.extend(splitter.create_documents([text], metadatas=[{"source": link}]))
+                    metadata = {
+                        "source": link,
+                        "supabase_pdf_url": supabase_pdf_url
+                    }
+                    all_chunks_in_batch.extend(splitter.create_documents([text], metadatas=[metadata]))
 
             except Exception as e:
                 error_msg = f"Failed {link}: {str(e)}"
@@ -929,13 +1179,17 @@ def context_agent(state: AgentState):
             source = doc.metadata.get('source', '')
             feed_title = doc.metadata.get('feed_title', '')
             content_type = doc.metadata.get('content_type', '')
+            supabase_pdf_url = doc.metadata.get('supabase_pdf_url', '')
+            supabase_audio_url = doc.metadata.get('supabase_audio_url', '')
             
             if source:
                 source_info.append({
                     'source': source,
                     'feed_title': feed_title,
                     'episode_title': episode_title,
-                    'content_type': content_type
+                    'content_type': content_type,
+                    'supabase_pdf_url': supabase_pdf_url,
+                    'supabase_audio_url': supabase_audio_url
                 })
         
         # Add debug info for sources
@@ -952,13 +1206,17 @@ def context_agent(state: AgentState):
             source = doc.metadata.get('source', '')
             feed_title = doc.metadata.get('feed_title', '')
             content_type = doc.metadata.get('content_type', '')
+            supabase_pdf_url = doc.metadata.get('supabase_pdf_url', '')
+            supabase_audio_url = doc.metadata.get('supabase_audio_url', '')
             
             if source:
                 source_info.append({
                     'source': source,
                     'feed_title': feed_title,
                     'episode_title': episode_title,
-                    'content_type': content_type
+                    'content_type': content_type,
+                    'supabase_pdf_url': supabase_pdf_url,
+                    'supabase_audio_url': supabase_audio_url
                 })
         
         print(f"--- DEBUG: Fallback sources: {len(source_info)} ---")
@@ -1042,7 +1300,7 @@ app_agent = workflow.compile()
 
 # --- DEDUPLICATED BACKGROUND TASK FOR MULTIPLE FEEDS ---
 def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
-    """Process multiple RSS feeds one by one with audio transcription and speaker diarization"""
+    """Process multiple RSS feeds one by one with audio transcription, speaker diarization, and Supabase storage"""
     temp_dir = tempfile.mkdtemp()
     
     processing_status[task_id]["errors"] = []
@@ -1102,6 +1360,8 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
             episodes_processed = 0
             for episode in new_episodes:
                 audio_path = None
+                supabase_audio_url = None
+                supabase_pdf_url = None
                 max_retries = 3
                 retry_count = 0
                 
@@ -1129,6 +1389,13 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                             f.write(chunk)
                                 
                                 print(f"✅ Downloaded: {episode_title}")
+                                
+                                # Upload audio to Supabase
+                                audio_upload = supabase_manager.upload_audio(audio_path, audio_filename)
+                                if audio_upload["success"]:
+                                    supabase_audio_url = audio_upload["url"]
+                                    print(f"☁️ Audio uploaded to Supabase: {episode_title}")
+                                
                                 break
                                 
                             except (requests.exceptions.RequestException, requests.exceptions.Timeout) as e:
@@ -1139,7 +1406,7 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                 import time
                                 time.sleep(5 * retry_count)
                         
-                        # ✅ Transcribe with speaker diarization
+                        # Transcribe with speaker diarization
                         print(f"🎙️ Transcribing with Speaker Diarization: {episode_title}")
                         transcription_success = False
                         transcription_retries = 3
@@ -1149,7 +1416,6 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                             try:
                                 print(f"🎙️ Transcription attempt {transcription_attempt + 1}/{transcription_retries}")
                                 
-                                # ✅ Enable speaker diarization
                                 config = aai.TranscriptionConfig(speaker_labels=True)
                                 transcriber = aai.Transcriber()
                                 transcript = transcriber.transcribe(audio_path, config=config)
@@ -1178,7 +1444,7 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                     raise Exception("Transcription timeout")
                                 
                                 if transcription_success and transcript.text:
-                                    # ✅ Format transcript with speaker labels
+                                    # Format transcript with speaker labels
                                     formatted_transcript = format_transcript_with_speakers(transcript)
                                     
                                     # Get speaker count
@@ -1200,12 +1466,16 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                     safe_filename = "".join(c for c in episode_title if c.isalnum() or c in (' ', '-', '_')).strip()
                                     safe_filename = safe_filename[:100]
                                     
-                                    # ✅ Save PDF with speaker labels
-                                    pdf_path = transcript_to_pdf_with_speakers(
+                                    # Save PDF to Supabase
+                                    pdf_result = transcript_to_pdf_with_speakers(
                                         transcript,
                                         f"{safe_filename}_{uuid.uuid4().hex[:4]}",
-                                        TRANSCRIPT_OUTPUT_DIR
+                                        upload_to_supabase=True
                                     )
+                                    
+                                    if pdf_result.get("supabase_uploaded"):
+                                        supabase_pdf_url = pdf_result["supabase_url"]
+                                        print(f"☁️ PDF uploaded to Supabase: {episode_title}")
                                     
                                     splitter = get_dynamic_splitter(content)
                                     chunks = splitter.create_documents([content], metadatas=[{
@@ -1214,7 +1484,9 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                         "feed_url": feed_url,
                                         "feed_title": feed_info.get('title', 'Unknown'),
                                         "content_type": "episode_transcript",
-                                        "speaker_count": speaker_count  # ✅ Add speaker count to metadata
+                                        "speaker_count": speaker_count,
+                                        "supabase_audio_url": supabase_audio_url,
+                                        "supabase_pdf_url": supabase_pdf_url
                                     }])
                                     
                                     vs = load_vectorstore()
@@ -1268,7 +1540,13 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                         else:
                             vs.add_documents(chunks)
                     
-                    metadata_manager.add_episode(feed_url, episode['guid'], episode_title)
+                    metadata_manager.add_episode(
+                        feed_url, 
+                        episode['guid'], 
+                        episode_title,
+                        audio_url=supabase_audio_url,
+                        pdf_url=supabase_pdf_url
+                    )
                     episodes_processed += 1
                     
                 except Exception as e:
@@ -1276,6 +1554,7 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                     processing_status[task_id]["errors"].append(error_msg)
                 
                 finally:
+                    # Clean up temp audio file
                     if audio_path and os.path.exists(audio_path):
                         try:
                             os.remove(audio_path)
@@ -1315,7 +1594,7 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed_info: Dict, task_id: str):
-    """Process episodes with deduplication tracking - Downloads and transcribes audio with speaker diarization"""
+    """Process episodes with deduplication tracking and Supabase storage"""
     processed_count = 0
     
     processing_status[task_id]["errors"] = []
@@ -1340,6 +1619,8 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
     for episode in episodes:
         audio_path = None
         episode_success = False
+        supabase_audio_url = None
+        supabase_pdf_url = None
         
         try:
             audio_url = episode.get('audio_url', '').strip()
@@ -1407,7 +1688,7 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                         safe_filename = "".join(c for c in episode_title if c.isalnum() or c in (' ', '-', '_')).strip()
                         safe_filename = safe_filename[:80] or "episode"
                         audio_filename = f"{safe_filename}_{uuid.uuid4().hex[:6]}.mp3"
-                        audio_path = os.path.join(AUDIO_OUTPUT_DIR, audio_filename)
+                        audio_path = os.path.join(TEMP_AUDIO_DIR, audio_filename)
                         
                         total_size = 0
                         with open(audio_path, 'wb') as f:
@@ -1419,7 +1700,14 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                         if total_size < 1024:
                             raise Exception("File too small")
                         
-                        print(f"✅ Downloaded: {total_size / 1024 / 1024:.2f} MB saved to {audio_filename}")
+                        print(f"✅ Downloaded: {total_size / 1024 / 1024:.2f} MB")
+                        
+                        # Upload audio to Supabase
+                        audio_upload = supabase_manager.upload_audio(audio_path, audio_filename)
+                        if audio_upload["success"]:
+                            supabase_audio_url = audio_upload["url"]
+                            print(f"☁️ Audio uploaded to Supabase")
+                        
                         download_success = True
                         
                     except Exception as dl_err:
@@ -1431,7 +1719,6 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 pass
                         
                         if retry_count >= max_retries:
-                            #processing_status[task_id]["unsuccessful"] += 1
                             raise Exception(f"Download failed: {str(dl_err)[:100]}")
                         
                         print(f"⚠️ Retry {retry_count}: {str(dl_err)[:50]}")
@@ -1447,7 +1734,6 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                         try:
                             print(f"🎙️ Transcribing with Speaker Diarization (Attempt {transcription_attempt + 1}/{transcription_retries}): {episode_title[:40]}")
                             
-                            # ✅ Enable speaker diarization
                             config = aai.TranscriptionConfig(speaker_labels=True)
                             transcriber = aai.Transcriber()
                             transcript = transcriber.transcribe(audio_path, config=config)
@@ -1476,7 +1762,7 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 raise Exception("Transcription timeout")
                             
                             if transcription_success and transcript.text:
-                                # ✅ Format transcript with speaker labels
+                                # Format transcript with speaker labels
                                 formatted_transcript = format_transcript_with_speakers(transcript)
                                 
                                 # Get speaker count
@@ -1497,12 +1783,16 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 
                                 pdf_filename = f"{safe_filename[:80]}_{uuid.uuid4().hex[:4]}"
                                 
-                                # ✅ Save PDF with speaker labels
-                                pdf_path = transcript_to_pdf_with_speakers(
+                                # Save PDF to Supabase
+                                pdf_result = transcript_to_pdf_with_speakers(
                                     transcript,
                                     pdf_filename,
-                                    TRANSCRIPT_OUTPUT_DIR
+                                    upload_to_supabase=True
                                 )
+                                
+                                if pdf_result.get("supabase_uploaded"):
+                                    supabase_pdf_url = pdf_result["supabase_url"]
+                                    print(f"☁️ PDF uploaded to Supabase")
                                 
                                 splitter = get_dynamic_splitter(content)
                                 chunks = splitter.create_documents([content], metadatas=[{
@@ -1511,8 +1801,9 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                     "feed_url": feed_url,
                                     "feed_title": feed_info.get('title', 'Unknown'),
                                     "content_type": "episode_transcript",
-                                    "audio_file": audio_filename,
-                                    "speaker_count": speaker_count  # ✅ Add speaker count to metadata
+                                    "speaker_count": speaker_count,
+                                    "supabase_audio_url": supabase_audio_url,
+                                    "supabase_pdf_url": supabase_pdf_url
                                 }])
                                 
                                 vs = load_vectorstore()
@@ -1524,7 +1815,13 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 print(f"✅ Stored: {episode_title[:40]} ({len(chunks)} chunks, {speaker_count} speakers)")
                                 processing_status[task_id]["success"] += 1
                                 episode_success = True
-                                metadata_manager.add_episode(feed_url, episode.get('guid', ''), episode_title)
+                                metadata_manager.add_episode(
+                                    feed_url, 
+                                    episode.get('guid', ''), 
+                                    episode_title,
+                                    audio_url=supabase_audio_url,
+                                    pdf_url=supabase_pdf_url
+                                )
                                 break
                             
                         except Exception as transcribe_err:
@@ -1550,6 +1847,13 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 processing_status[task_id]["unsuccessful"] += 1
                                 print(f"❌ {error_msg}")
                                 break
+                    
+                    # Clean up temp audio after processing
+                    if audio_path and os.path.exists(audio_path):
+                        try:
+                            os.remove(audio_path)
+                        except:
+                            pass
                     
                     if not transcription_success:
                         error_msg = f"Transcription timeout/failed: {episode_title}"
@@ -1579,10 +1883,10 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                 else:
                     vs.add_documents(chunks)
                 
-                # MARK AS METADATA, NOT SUCCESS
-                processing_status[task_id]["metadata"] += 1  # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←......
+                processing_status[task_id]["metadata"] += 1
                 episode_success = True
                 metadata_manager.add_episode(feed_url, episode.get('guid', ''), episode_title)
+                
         except Exception as e:
             error_msg = f"Failed: {episode.get('title', 'Unknown')[:50]} - {str(e)[:100]}"
             processing_status[task_id]["errors"].append(error_msg)
@@ -1608,6 +1912,7 @@ async def upload_file(file: UploadFile = File(...)):
     ext = filename.split(".")[-1].lower()
     
     temp_dir = tempfile.mkdtemp()
+    supabase_pdf_url = None
     
     try:
         tmp_path = os.path.join(temp_dir, filename)
@@ -1629,9 +1934,18 @@ async def upload_file(file: UploadFile = File(...)):
 
         if ext == "pdf":
             content = extract_text_from_pdf(tmp_path)
+            
+            # Upload PDF to Supabase
+            pdf_upload = supabase_manager.upload_pdf(tmp_path, filename)
+            if pdf_upload["success"]:
+                supabase_pdf_url = pdf_upload["url"]
 
         elif ext in ["mp3", "wav", "m4a"]:
-            # ✅ Enable speaker diarization for uploaded audio files
+            # Upload audio to Supabase first
+            audio_upload = supabase_manager.upload_audio(tmp_path, filename)
+            supabase_audio_url = audio_upload["url"] if audio_upload["success"] else None
+            
+            # Transcribe with speaker diarization
             config = aai.TranscriptionConfig(speaker_labels=True)
             transcriber = aai.Transcriber()
             transcript = transcriber.transcribe(tmp_path, config=config)
@@ -1639,10 +1953,11 @@ async def upload_file(file: UploadFile = File(...)):
             if transcript.status != aai.TranscriptStatus.error:
                 # Format with speaker labels
                 content = format_transcript_with_speakers(transcript)
-                pdf_path = transcript_to_pdf_with_speakers(transcript, filename, temp_dir)
                 
-                # Also extract text from the generated PDF
-                content = extract_text_from_pdf(pdf_path)
+                # Create and upload PDF to Supabase
+                pdf_result = transcript_to_pdf_with_speakers(transcript, filename, upload_to_supabase=True)
+                if pdf_result.get("supabase_uploaded"):
+                    supabase_pdf_url = pdf_result["supabase_url"]
             else:
                 content = ""
 
@@ -1654,7 +1969,11 @@ async def upload_file(file: UploadFile = File(...)):
             return {"success": False, "message": f"Could not extract any text from {filename}."}
 
         splitter = get_dynamic_splitter(content)
-        chunks = splitter.create_documents([content], metadatas=[{"source": filename}])
+        metadata = {
+            "source": filename,
+            "supabase_pdf_url": supabase_pdf_url
+        }
+        chunks = splitter.create_documents([content], metadatas=[metadata])
         
         vs = load_vectorstore()
         if vs is None:
@@ -1662,12 +1981,13 @@ async def upload_file(file: UploadFile = File(...)):
         else:
             vs.add_documents(chunks)
         
-        metadata_manager.add_file(filename, file_hash, len(chunks))
+        metadata_manager.add_file(filename, file_hash, len(chunks), supabase_pdf_url)
 
         return {
             "success": True, 
             "message": f"Successfully processed {filename} into {len(chunks)} chunks.",
-            "chunks_count": len(chunks)
+            "chunks_count": len(chunks),
+            "supabase_url": supabase_pdf_url
         }
 
     except Exception as e:
@@ -1695,7 +2015,7 @@ async def generate_content(req: ContentGenerationRequest):
 
 @app.post("/enhanced-ingest-url")
 async def enhanced_ingest_url(req: UrlRequest, background_tasks: BackgroundTasks):
-    """Enhanced URL ingestion with deduplication and speaker diarization"""
+    """Enhanced URL ingestion with deduplication, speaker diarization, and Supabase storage"""
     try:
         result = rss_processor.get_new_episodes(req.url)
         
@@ -1730,7 +2050,7 @@ async def enhanced_ingest_url(req: UrlRequest, background_tasks: BackgroundTasks
             "feed_info": feed_info,
             "is_new_feed": is_new_feed,
             "success": 0,
-            "metadata": 0,          # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←......
+            "metadata": 0,
             "unsuccessful": 0,
             "errors": []
         }
@@ -1743,7 +2063,7 @@ async def enhanced_ingest_url(req: UrlRequest, background_tasks: BackgroundTasks
         return {
             "success": True,
             "task_id": task_id,
-            "message": f"Processing {len(new_episodes)} new episodes from {feed_info.get('title', 'Unknown Feed')} with speaker diarization",
+            "message": f"Processing {len(new_episodes)} new episodes from {feed_info.get('title', 'Unknown Feed')} with speaker diarization and Supabase storage",
             "new_episodes_count": len(new_episodes),
             "is_new_feed": is_new_feed,
             "feed_info": feed_info,
@@ -1756,7 +2076,7 @@ async def enhanced_ingest_url(req: UrlRequest, background_tasks: BackgroundTasks
 
 @app.post("/enhanced-ingest-multiple-urls")
 async def enhanced_ingest_multiple_urls(req: MultiUrlRequest, background_tasks: BackgroundTasks):
-    """Process multiple RSS feeds with deduplication and speaker diarization"""
+    """Process multiple RSS feeds with deduplication, speaker diarization, and Supabase storage"""
     try:
         if not req.urls:
             return {"success": False, "message": "No URLs provided"}
@@ -1781,7 +2101,7 @@ async def enhanced_ingest_multiple_urls(req: MultiUrlRequest, background_tasks: 
         return {
             "success": True,
             "task_id": task_id,
-            "message": f"Started processing {len(req.urls)} RSS feeds with speaker diarization",
+            "message": f"Started processing {len(req.urls)} RSS feeds with speaker diarization and Supabase storage",
             "total_feeds": len(req.urls)
         }
         
@@ -1816,7 +2136,7 @@ async def ingest_url(req: UrlRequest, background_tasks: BackgroundTasks):
         return {
             "success": True, 
             "task_id": task_id,
-            "message": f"Started processing {len(file_links)} files with speaker diarization."
+            "message": f"Started processing {len(file_links)} files with speaker diarization and Supabase storage."
         }
     except Exception as e:
         return {"success": False, "message": f"Error: {str(e)}"}
