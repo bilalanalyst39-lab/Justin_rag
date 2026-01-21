@@ -2,8 +2,8 @@
 *.pdf
 
 # Ignore large directories
-permanent_transcripts/
-downloaded_audios/
+temp_audios/
+temp_transcripts/
 
 # Ignore Python cache
 __pycache__/

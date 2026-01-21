@@ -262,7 +262,11 @@ app = FastAPI(title="Professional Dual-Agent RAG with Speaker Diarization & Supa
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8501",  # Streamlit local
+        "http://localhost:8502",  # Streamlit alternative port
+        "*"
+        ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2206,4 +2210,10 @@ async def clear_db():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        log_level="info"
+    )
