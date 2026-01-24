@@ -1,0 +1,25 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ASSEMBLYAI_API_KEY=${ASSEMBLYAI_API_KEY}
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - PINECONE_INDEX_NAME=${PINECONE_INDEX_NAME:-rag-index}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - SUPABASE_BUCKET_AUDIO=${SUPABASE_BUCKET_AUDIO:-audio-files}
+      - SUPABASE_BUCKET_TRANSCRIPTS=${SUPABASE_BUCKET_TRANSCRIPTS:-transcripts}
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
