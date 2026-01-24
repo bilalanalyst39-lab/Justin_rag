@@ -51,8 +51,9 @@ SUPABASE_BUCKET_AUDIO = os.getenv("SUPABASE_BUCKET_AUDIO", "audio-files")
 SUPABASE_BUCKET_TRANSCRIPTS = os.getenv("SUPABASE_BUCKET_TRANSCRIPTS", "transcripts")
 
 # Temporary directories (for processing only, not permanent storage)
-TEMP_TRANSCRIPT_DIR = "/app/temp_transcripts"
-TEMP_AUDIO_DIR = "/app/temp_audios"
+import tempfile
+TEMP_TRANSCRIPT_DIR = os.path.join(tempfile.gettempdir(), "temp_transcripts")
+TEMP_AUDIO_DIR = os.path.join(tempfile.gettempdir(), "temp_audios")
 os.makedirs(TEMP_TRANSCRIPT_DIR, exist_ok=True)
 os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
 
