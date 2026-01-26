@@ -590,15 +590,14 @@ def safe_text(text: str, max_word_len: int = 40) -> str:
 # ✅ UPDATED: Speaker-aware PDF generation with Supabase upload
 # ✅ ULTRA-ROBUST: Multiple fallback strategies for production
 def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Create PDF with speaker diarization - production-safe version"""
+    """Create PDF with speaker diarization - fixed bytes issue"""
     try:
         from fpdf import FPDF
         
-        # Create PDF with explicit dimensions
         pdf = FPDF(orientation='P', unit='mm', format='A4')
         pdf.add_page()
         
-        # CRITICAL FIX: Use very safe margins (A4 = 210mm wide)
+        # Safe margins
         left_margin = 15
         right_margin = 15
         pdf.set_left_margin(left_margin)
@@ -606,99 +605,104 @@ def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_sup
         pdf.set_top_margin(15)
         pdf.set_auto_page_break(auto=True, margin=15)
         
-        # Calculate effective width (A4 width = 210mm)
-        effective_width = 210 - left_margin - right_margin  # = 180mm
+        effective_width = 210 - left_margin - right_margin
         
-        # Use Helvetica (built-in, always available)
+        # Use Helvetica
         try:
             pdf.set_font("Helvetica", size=9)
         except:
             pdf.set_font("Arial", size=9)
         
-        # Simple title
+        # Title
         try:
             pdf.set_font("Helvetica", 'B', 11)
-            safe_title = ''.join(c for c in str(filename)[:40] if ord(c) < 128 and c.isalnum() or c in ' -_')
+            safe_title = ''.join(c for c in str(filename)[:40] if ord(c) < 128 and (c.isalnum() or c in ' -_'))
             pdf.cell(effective_width, 8, txt=f"Transcript: {safe_title}", ln=True)
             pdf.ln(3)
+            pdf.set_font("Helvetica", size=9)
         except:
             pass
         
-        # Reset to normal font
-        pdf.set_font("Helvetica", size=9)
-        
-        # Build content
-        lines_to_write = []
+        # Content
+        lines_written = 0
+        max_lines = 2000  # Limit for safety
         
         if hasattr(transcript_obj, 'utterances') and transcript_obj.utterances:
             speaker_count = len(set(u.speaker for u in transcript_obj.utterances))
-            lines_to_write.append(f"Speakers: {speaker_count}")
-            lines_to_write.append("")
+            
+            try:
+                pdf.cell(effective_width, 5, txt=f"Speakers: {speaker_count}", ln=True)
+                pdf.ln(2)
+            except:
+                pass
             
             for utterance in transcript_obj.utterances:
+                if lines_written >= max_lines:
+                    break
+                    
                 try:
                     speaker = str(getattr(utterance, 'speaker', 'Unknown'))
                     text = str(getattr(utterance, 'text', ''))
                     
-                    # CRITICAL: Remove ALL non-ASCII and problematic characters
+                    # Clean text
                     speaker = ''.join(c for c in speaker if 32 <= ord(c) < 127)
                     text = ''.join(c for c in text if 32 <= ord(c) < 127)
                     
                     if text.strip():
-                        # Break long lines manually
                         line = f"{speaker}: {text}"
-                        # Limit line length to prevent overflow
-                        if len(line) > 200:
-                            line = line[:200] + "..."
-                        lines_to_write.append(line)
+                        if len(line) > 180:
+                            line = line[:180] + "..."
+                        
+                        pdf.multi_cell(effective_width, 5, txt=line)
+                        lines_written += 1
                 except:
                     continue
         else:
-            # Fallback to plain text
+            # Plain text fallback
             try:
                 plain = str(transcript_obj.text)
                 plain = ''.join(c for c in plain if 32 <= ord(c) < 127)
-                # Split into manageable chunks
+                
                 words = plain.split()
                 current_line = ""
-                for word in words:
-                    if len(current_line) + len(word) < 150:
+                
+                for word in words[:5000]:
+                    if lines_written >= max_lines:
+                        break
+                        
+                    if len(current_line) + len(word) < 140:
                         current_line += word + " "
                     else:
-                        lines_to_write.append(current_line.strip())
+                        try:
+                            pdf.multi_cell(effective_width, 5, txt=current_line.strip())
+                            lines_written += 1
+                        except:
+                            pass
                         current_line = word + " "
-                if current_line:
-                    lines_to_write.append(current_line.strip())
+                
+                if current_line and lines_written < max_lines:
+                    try:
+                        pdf.multi_cell(effective_width, 5, txt=current_line.strip())
+                    except:
+                        pass
             except:
-                lines_to_write.append("Transcript content unavailable")
+                pdf.cell(effective_width, 5, txt="Transcript unavailable", ln=True)
         
-        # Write lines with explicit error handling
-        for line in lines_to_write:
-            if not line:
-                pdf.ln(2)
-                continue
-            
-            try:
-                # Use explicit width, not 0
-                pdf.multi_cell(effective_width, 5, txt=line)
-            except Exception as cell_err:
-                # If multi_cell fails, try simple cell
-                try:
-                    short_line = line[:100] if len(line) > 100 else line
-                    pdf.cell(effective_width, 5, txt=short_line, ln=True)
-                except:
-                    # Skip problematic line entirely
-                    continue
+        # ✅ FIX: Don't encode - FPDF already returns bytes
+        pdf_bytes = pdf.output(dest='S')
         
-        # Output PDF to bytes first (more reliable)
-        pdf_bytes = pdf.output(dest='S').encode('latin-1')
+        # Ensure it's bytes type
+        if isinstance(pdf_bytes, str):
+            pdf_bytes = pdf_bytes.encode('latin-1')
+        elif isinstance(pdf_bytes, bytearray):
+            pdf_bytes = bytes(pdf_bytes)
         
         result = {
             "supabase_uploaded": False,
             "local_path": None
         }
         
-        # Upload to Supabase directly from bytes
+        # Upload to Supabase
         if upload_to_supabase:
             try:
                 upload_result = supabase_manager.upload_pdf_from_bytes(
@@ -711,28 +715,19 @@ def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_sup
                     result["supabase_path"] = upload_result["path"]
                     print(f"✅ PDF uploaded to Supabase: {filename}")
             except Exception as upload_err:
-                print(f"⚠️ Supabase upload failed: {str(upload_err)[:50]}")
-        
-        # Fallback: save locally if upload failed
-        if not result["supabase_uploaded"]:
-            try:
-                temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
-                with open(temp_pdf_path, 'wb') as f:
-                    f.write(pdf_bytes)
-                result["local_path"] = temp_pdf_path
-            except:
-                pass
+                print(f"⚠️ Supabase upload error: {str(upload_err)[:100]}")
         
         return result
         
     except Exception as e:
-        error_msg = f"PDF generation failed: {str(e)[:100]}"
+        error_msg = f"PDF error: {str(e)[:100]}"
         print(f"❌ {error_msg}")
         return {
             "error": error_msg,
             "supabase_uploaded": False,
             "local_path": None
         }
+
 
 
 
@@ -762,50 +757,37 @@ def format_transcript_with_speakers(transcript_obj) -> str:
 
 # ✅ SIMPLIFIED: Legacy PDF function
 def transcript_to_pdf(text: str, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Simple text to PDF - production-safe version"""
+    """Simple text to PDF - fixed bytes issue"""
     try:
         from fpdf import FPDF
         
-        pdf = FPDF(orientation='P', unit='mm', format='A4')
+        pdf = FPDF()
         pdf.add_page()
-        
-        left_margin = 15
-        right_margin = 15
-        pdf.set_left_margin(left_margin)
-        pdf.set_right_margin(right_margin)
+        pdf.set_left_margin(15)
+        pdf.set_right_margin(15)
         pdf.set_auto_page_break(auto=True, margin=15)
-        
-        effective_width = 210 - left_margin - right_margin
         
         pdf.set_font("Helvetica", size=9)
         
-        # Clean text - ASCII only
+        # Clean text
         text = ''.join(c for c in str(text) if 32 <= ord(c) < 127)
         
-        # Split into lines
-        words = text.split()
-        current_line = ""
-        
-        for word in words[:5000]:  # Limit total words
-            if len(current_line) + len(word) < 150:
-                current_line += word + " "
-            else:
-                try:
-                    pdf.multi_cell(effective_width, 5, txt=current_line.strip())
-                except:
-                    pass
-                current_line = word + " "
-        
-        if current_line:
+        # Write content
+        lines = text.split('\n')
+        for line in lines[:500]:  # Limit lines
+            if len(line) > 180:
+                line = line[:180]
             try:
-                pdf.multi_cell(effective_width, 5, txt=current_line.strip())
+                pdf.multi_cell(180, 5, txt=line)
             except:
-                pass
+                continue
         
-        # Output to bytes
-        pdf_bytes = pdf.output(dest='S').encode('latin-1')
+        # ✅ FIX: Handle bytes properly
+        pdf_bytes = pdf.output(dest='S')
+        if isinstance(pdf_bytes, bytearray):
+            pdf_bytes = bytes(pdf_bytes)
         
-        result = {"supabase_uploaded": False, "local_path": None}
+        result = {"supabase_uploaded": False}
         
         if upload_to_supabase:
             try:
@@ -813,14 +795,13 @@ def transcript_to_pdf(text: str, filename: str, upload_to_supabase: bool = True)
                 if upload_result.get("success"):
                     result["supabase_uploaded"] = True
                     result["supabase_url"] = upload_result["url"]
-            except:
-                pass
+            except Exception as e:
+                print(f"Upload error: {str(e)[:50]}")
         
         return result
         
     except Exception as e:
         return {"error": str(e), "supabase_uploaded": False}
-
 
 def save_text_to_pdf(text: str, output_path: str):
     """Saves transcription text into a professional PDF format."""
