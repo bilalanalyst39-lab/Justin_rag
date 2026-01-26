@@ -798,13 +798,23 @@ def process_in_batches_task(file_links: list, task_id: str):
                         transcript = transcriber.transcribe(temp_audio_path, config=config)
                         
                         if transcript.status != aai.TranscriptStatus.error:
-                            # Format with speaker labels
-                            text = format_transcript_with_speakers(transcript)
+                            # Try to format with speaker labels, fall back to plain text
+                            try:
+                                text = format_transcript_with_speakers(transcript)
+                                print("✅ Transcript formatted with speaker labels")
+                            except Exception as format_err:
+                                print(f"⚠️ Transcript formatting failed: {str(format_err)[:50]}")
+                                text = transcript.text
+                                print("📝 Using plain text transcript instead")
                             
                             # Create and upload PDF to Supabase
-                            pdf_result = transcript_to_pdf_with_speakers(transcript, base_name, upload_to_supabase=True)
-                            if pdf_result.get("supabase_uploaded"):
-                                supabase_pdf_url = pdf_result["supabase_url"]
+                            try:
+                                pdf_result = transcript_to_pdf_with_speakers(transcript, base_name, upload_to_supabase=True)
+                                if pdf_result.get("supabase_uploaded"):
+                                    supabase_pdf_url = pdf_result["supabase_url"]
+                            except Exception as pdf_err:
+                                print(f"⚠️ PDF generation error: {str(pdf_err)[:50]}")
+                                print("📝 Continuing without PDF")
                         
                         # Clean up temp audio
                         os.remove(temp_audio_path)
@@ -1458,8 +1468,14 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                     raise Exception("Transcription timeout")
                                 
                                 if transcription_success and transcript.text:
-                                    # Format transcript with speaker labels
-                                    formatted_transcript = format_transcript_with_speakers(transcript)
+                                    # Try to format transcript with speaker labels, fall back to plain text
+                                    try:
+                                        formatted_transcript = format_transcript_with_speakers(transcript)
+                                        print("✅ Transcript formatted with speaker labels")
+                                    except Exception as format_err:
+                                        print(f"⚠️ Transcript formatting failed: {str(format_err)[:50]}")
+                                        formatted_transcript = transcript.text
+                                        print("📝 Using plain text transcript instead")
                                     
                                     # Get speaker count
                                     speaker_count = 0
