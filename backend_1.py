@@ -590,146 +590,150 @@ def safe_text(text: str, max_word_len: int = 40) -> str:
 # ✅ UPDATED: Speaker-aware PDF generation with Supabase upload
 # ✅ ULTRA-ROBUST: Multiple fallback strategies for production
 def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Create PDF with speaker diarization - ultra-robust with multiple fallback strategies"""
+    """Create PDF with speaker diarization - production-safe version"""
     try:
         from fpdf import FPDF
         
-        # Create PDF with more generous page size
+        # Create PDF with explicit dimensions
         pdf = FPDF(orientation='P', unit='mm', format='A4')
         pdf.add_page()
         
-        # CRITICAL: Much more generous margins to avoid space issues
-        pdf.set_margins(left=20, top=20, right=20)
-        pdf.set_auto_page_break(auto=True, margin=20)
+        # CRITICAL FIX: Use very safe margins (A4 = 210mm wide)
+        left_margin = 15
+        right_margin = 15
+        pdf.set_left_margin(left_margin)
+        pdf.set_right_margin(right_margin)
+        pdf.set_top_margin(15)
+        pdf.set_auto_page_break(auto=True, margin=15)
         
-        # Try different fonts in order of preference
-        font_preferences = ['Courier', 'Times', 'Helvetica']
-        font_set = False
+        # Calculate effective width (A4 width = 210mm)
+        effective_width = 210 - left_margin - right_margin  # = 180mm
         
-        for font_name in font_preferences:
-            try:
-                pdf.set_font(font_name, size=8)
-                font_set = True
-                print(f"✅ Using font: {font_name}")
-                break
-            except:
-                continue
-        
-        if not font_set:
-            raise Exception("Could not set any font")
-        
-        # Add title - keep it simple
+        # Use Helvetica (built-in, always available)
         try:
-            pdf.set_font(font_preferences[0] if font_set else 'Courier', 'B', 10)
-            # Only use ASCII characters for title
-            safe_title = ''.join(c for c in filename if ord(c) < 128)[:50]
-            pdf.cell(0, 10, txt=f"Transcript: {safe_title}", ln=True)
+            pdf.set_font("Helvetica", size=9)
+        except:
+            pdf.set_font("Arial", size=9)
+        
+        # Simple title
+        try:
+            pdf.set_font("Helvetica", 'B', 11)
+            safe_title = ''.join(c for c in str(filename)[:40] if ord(c) < 128 and c.isalnum() or c in ' -_')
+            pdf.cell(effective_width, 8, txt=f"Transcript: {safe_title}", ln=True)
             pdf.ln(3)
-        except Exception as title_err:
-            print(f"⚠️ Title error: {str(title_err)[:50]}")
+        except:
             pass
         
-        # Build transcript as plain text only - no fancy formatting
-        full_text = ""
+        # Reset to normal font
+        pdf.set_font("Helvetica", size=9)
+        
+        # Build content
+        lines_to_write = []
         
         if hasattr(transcript_obj, 'utterances') and transcript_obj.utterances:
             speaker_count = len(set(u.speaker for u in transcript_obj.utterances))
-            full_text += f"Speakers Detected: {speaker_count}\n\n"
+            lines_to_write.append(f"Speakers: {speaker_count}")
+            lines_to_write.append("")
             
-            # Process utterances - keep only ASCII
-            for idx, utterance in enumerate(transcript_obj.utterances):
+            for utterance in transcript_obj.utterances:
                 try:
-                    speaker = str(utterance.speaker)
-                    text = str(utterance.text)
+                    speaker = str(getattr(utterance, 'speaker', 'Unknown'))
+                    text = str(getattr(utterance, 'text', ''))
                     
-                    # Remove all non-ASCII characters
-                    speaker = ''.join(c for c in speaker if ord(c) < 128)
-                    text = ''.join(c for c in text if ord(c) < 128)
+                    # CRITICAL: Remove ALL non-ASCII and problematic characters
+                    speaker = ''.join(c for c in speaker if 32 <= ord(c) < 127)
+                    text = ''.join(c for c in text if 32 <= ord(c) < 127)
                     
                     if text.strip():
-                        full_text += f"{speaker}: {text}\n\n"
-                        
-                except Exception as utt_err:
+                        # Break long lines manually
+                        line = f"{speaker}: {text}"
+                        # Limit line length to prevent overflow
+                        if len(line) > 200:
+                            line = line[:200] + "..."
+                        lines_to_write.append(line)
+                except:
                     continue
         else:
             # Fallback to plain text
             try:
                 plain = str(transcript_obj.text)
-                # Remove non-ASCII
-                plain = ''.join(c for c in plain if ord(c) < 128)
-                full_text = plain
+                plain = ''.join(c for c in plain if 32 <= ord(c) < 127)
+                # Split into manageable chunks
+                words = plain.split()
+                current_line = ""
+                for word in words:
+                    if len(current_line) + len(word) < 150:
+                        current_line += word + " "
+                    else:
+                        lines_to_write.append(current_line.strip())
+                        current_line = word + " "
+                if current_line:
+                    lines_to_write.append(current_line.strip())
             except:
-                full_text = "[Transcript unavailable]"
+                lines_to_write.append("Transcript content unavailable")
         
-        # Write the text - use simple cell/multi_cell
-        if full_text.strip():
+        # Write lines with explicit error handling
+        for line in lines_to_write:
+            if not line:
+                pdf.ln(2)
+                continue
+            
             try:
-                pdf.set_font(font_preferences[0] if font_set else 'Courier', size=8)
-                
-                # Split into chunks to avoid overwhelming FPDF
-                lines = full_text.split('\n')
-                for line in lines:
-                    if not line.strip():
-                        pdf.ln(2)
-                        continue
-                    
-                    # Write line by line with error handling
-                    try:
-                        # Limit line length
-                        if len(line) > 500:
-                            line = line[:500] + "..."
-                        pdf.multi_cell(0, 4, txt=line)
-                    except:
-                        # If multi_cell fails, skip this line
-                        continue
-                        
-            except Exception as write_err:
-                print(f"⚠️ Write error: {str(write_err)[:50]}")
-                # Last resort: add minimal text
-                pdf.set_font(font_preferences[0], size=8)
-                pdf.cell(0, 10, txt="Transcript processed - see database", ln=True)
-        else:
-            pdf.cell(0, 10, txt="No transcript content", ln=True)
+                # Use explicit width, not 0
+                pdf.multi_cell(effective_width, 5, txt=line)
+            except Exception as cell_err:
+                # If multi_cell fails, try simple cell
+                try:
+                    short_line = line[:100] if len(line) > 100 else line
+                    pdf.cell(effective_width, 5, txt=short_line, ln=True)
+                except:
+                    # Skip problematic line entirely
+                    continue
         
-        # Save PDF
-        temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
-        pdf.output(temp_pdf_path)
+        # Output PDF to bytes first (more reliable)
+        pdf_bytes = pdf.output(dest='S').encode('latin-1')
         
         result = {
-            "local_path": temp_pdf_path,
-            "supabase_uploaded": False
+            "supabase_uploaded": False,
+            "local_path": None
         }
         
-        # Upload to Supabase
+        # Upload to Supabase directly from bytes
         if upload_to_supabase:
             try:
-                upload_result = supabase_manager.upload_pdf(temp_pdf_path, f"{filename}.pdf")
-                if upload_result["success"]:
+                upload_result = supabase_manager.upload_pdf_from_bytes(
+                    pdf_bytes, 
+                    f"{filename}.pdf"
+                )
+                if upload_result.get("success"):
                     result["supabase_uploaded"] = True
                     result["supabase_url"] = upload_result["url"]
                     result["supabase_path"] = upload_result["path"]
-                    
-                    # Clean up
-                    try:
-                        os.remove(temp_pdf_path)
-                    except:
-                        pass
+                    print(f"✅ PDF uploaded to Supabase: {filename}")
             except Exception as upload_err:
-                print(f"⚠️ Upload error: {str(upload_err)[:50]}")
+                print(f"⚠️ Supabase upload failed: {str(upload_err)[:50]}")
         
-        print(f"✅ PDF generated: {filename}")
+        # Fallback: save locally if upload failed
+        if not result["supabase_uploaded"]:
+            try:
+                temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
+                with open(temp_pdf_path, 'wb') as f:
+                    f.write(pdf_bytes)
+                result["local_path"] = temp_pdf_path
+            except:
+                pass
+        
         return result
         
     except Exception as e:
-        error_msg = f"PDF error: {str(e)[:100]}"
+        error_msg = f"PDF generation failed: {str(e)[:100]}"
         print(f"❌ {error_msg}")
-        
-        # Return success=False but don't crash the entire process
         return {
             "error": error_msg,
             "supabase_uploaded": False,
             "local_path": None
         }
+
 
 
 # ✅ SIMPLIFIED: Format function with ASCII-only output
@@ -758,48 +762,66 @@ def format_transcript_with_speakers(transcript_obj) -> str:
 
 # ✅ SIMPLIFIED: Legacy PDF function
 def transcript_to_pdf(text: str, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Simple text to PDF - ASCII only"""
+    """Simple text to PDF - production-safe version"""
     try:
-        pdf = FPDF()
+        from fpdf import FPDF
+        
+        pdf = FPDF(orientation='P', unit='mm', format='A4')
         pdf.add_page()
-        pdf.set_margins(left=20, top=20, right=20)
-        pdf.set_auto_page_break(auto=True, margin=20)
         
-        pdf.set_font("Courier", size=8)
+        left_margin = 15
+        right_margin = 15
+        pdf.set_left_margin(left_margin)
+        pdf.set_right_margin(right_margin)
+        pdf.set_auto_page_break(auto=True, margin=15)
         
-        # ASCII only
-        text = ''.join(c for c in text if ord(c) < 128)
+        effective_width = 210 - left_margin - right_margin
         
-        # Split and write line by line
-        lines = text.split('\n')
-        for line in lines[:1000]:  # Limit lines
-            if len(line) > 500:
-                line = line[:500]
-            try:
-                pdf.multi_cell(0, 4, txt=line)
-            except:
-                continue
+        pdf.set_font("Helvetica", size=9)
         
-        temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
-        pdf.output(temp_pdf_path)
+        # Clean text - ASCII only
+        text = ''.join(c for c in str(text) if 32 <= ord(c) < 127)
         
-        result = {"local_path": temp_pdf_path, "supabase_uploaded": False}
+        # Split into lines
+        words = text.split()
+        current_line = ""
         
-        if upload_to_supabase:
-            upload_result = supabase_manager.upload_pdf(temp_pdf_path, f"{filename}.pdf")
-            if upload_result["success"]:
-                result["supabase_uploaded"] = True
-                result["supabase_url"] = upload_result["url"]
+        for word in words[:5000]:  # Limit total words
+            if len(current_line) + len(word) < 150:
+                current_line += word + " "
+            else:
                 try:
-                    os.remove(temp_pdf_path)
+                    pdf.multi_cell(effective_width, 5, txt=current_line.strip())
                 except:
                     pass
+                current_line = word + " "
+        
+        if current_line:
+            try:
+                pdf.multi_cell(effective_width, 5, txt=current_line.strip())
+            except:
+                pass
+        
+        # Output to bytes
+        pdf_bytes = pdf.output(dest='S').encode('latin-1')
+        
+        result = {"supabase_uploaded": False, "local_path": None}
+        
+        if upload_to_supabase:
+            try:
+                upload_result = supabase_manager.upload_pdf_from_bytes(pdf_bytes, f"{filename}.pdf")
+                if upload_result.get("success"):
+                    result["supabase_uploaded"] = True
+                    result["supabase_url"] = upload_result["url"]
+            except:
+                pass
         
         return result
+        
     except Exception as e:
         return {"error": str(e), "supabase_uploaded": False}
 
-        
+
 def save_text_to_pdf(text: str, output_path: str):
     """Saves transcription text into a professional PDF format."""
     pdf = FPDF()
