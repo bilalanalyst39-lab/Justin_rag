@@ -1812,6 +1812,11 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 if pdf_result.get("supabase_uploaded"):
                                     supabase_pdf_url = pdf_result["supabase_url"]
                                     print(f"☁️ PDF uploaded to Supabase")
+                                elif pdf_result.get("error"):
+                                    print(f"⚠️ PDF generation failed: {pdf_result['error']}")
+                                    print("📝 Continuing without PDF - transcription still successful")
+                                else:
+                                    print("⚠️ PDF generation skipped - continuing without PDF")
                                 
                                 splitter = get_dynamic_splitter(content)
                                 chunks = splitter.create_documents([content], metadatas=[{
@@ -1976,6 +1981,11 @@ async def upload_file(file: UploadFile = File(...)):
                 pdf_result = transcript_to_pdf_with_speakers(transcript, filename, upload_to_supabase=True)
                 if pdf_result.get("supabase_uploaded"):
                     supabase_pdf_url = pdf_result["supabase_url"]
+                elif pdf_result.get("error"):
+                    print(f"⚠️ PDF generation failed: {pdf_result['error']}")
+                    print("📝 Continuing without PDF - transcription still successful")
+                else:
+                    print("⚠️ PDF generation skipped - continuing without PDF")
             else:
                 content = ""
 
