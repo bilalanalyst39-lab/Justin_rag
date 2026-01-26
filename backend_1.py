@@ -566,80 +566,94 @@ def get_dynamic_splitter(text_content: str):
         separators=["\n\n", "\n", " ", ""]
     )
 
+def safe_text(text: str, max_word_len: int = 40) -> str:
+    """
+    Prevent FPDF crash due to long unbroken strings or invisible chars
+    """
+    if not text:
+        return ""
+
+    # ASCII only (FPDF safe)
+    text = text.encode("ascii", errors="ignore").decode("ascii")
+
+    # Break extremely long words
+    safe_words = []
+    for word in text.split():
+        if len(word) > max_word_len:
+            safe_words.append(word[:max_word_len])
+        else:
+            safe_words.append(word)
+
+    return " ".join(safe_words)
+
+
 # ✅ UPDATED: Speaker-aware PDF generation with Supabase upload
 def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Create PDF with speaker diarization labels and upload to Supabase"""
+    """Create PDF with speaker diarization labels and upload to Supabase - uses batch text approach"""
     try:
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_margins(left=25, top=25, right=25)  # Much larger margins
-        pdf.set_auto_page_break(auto=True, margin=25)  # Larger auto-break margin
+        # Reduced margins
+        pdf.set_margins(left=15, top=15, right=15)
+        pdf.set_auto_page_break(auto=True, margin=15)
         
-        # Use built-in font to avoid font substitution issues
-        pdf.set_font("Helvetica", size=10)
+        # Use Arial font
+        pdf.set_font("Arial", size=10)
         
         # Add title
-        pdf.set_font("Helvetica", 'B', 14)
-        pdf.multi_cell(0, 10, text=f"Transcript: {filename}")
+        pdf.set_font("Arial", 'B', 14)
+        title_text = f"Transcript: {filename}"
+        # Clean title text
+        title_text = title_text.encode('latin-1', 'replace').decode('latin-1')
+        pdf.multi_cell(0, 10, text=title_text)
         pdf.ln(5)
+        
+        # Build the entire transcript text first, then write it all at once
+        full_transcript_text = ""
         
         # Check if speaker labels are available
         if hasattr(transcript_obj, 'utterances') and transcript_obj.utterances:
-            pdf.set_font("Helvetica", size=10)
-            pdf.multi_cell(0, 8, text=f"Total Speakers Detected: {len(set(u.speaker for u in transcript_obj.utterances))}")
+            speaker_count = len(set(u.speaker for u in transcript_obj.utterances))
+            
+            pdf.set_font("Arial", size=10)
+            pdf.multi_cell(0, 8, text=f"Total Speakers Detected: {speaker_count}")
             pdf.ln(3)
             
-            # Format with speaker labels
+            # Build transcript with speaker labels as one continuous text
             for utterance in transcript_obj.utterances:
-                # Clean text to remove problematic characters
-                speaker_name = str(utterance.speaker).encode('ascii', errors='ignore').decode('ascii').strip()
-                speaker_text = str(utterance.text).encode('ascii', errors='ignore').decode('ascii').strip()
-                
-                # Ensure minimum content
-                if not speaker_name:
-                    speaker_name = "Speaker"
-                if not speaker_text:
-                    speaker_text = "[No transcript available]"
-                
-                # Speaker label in bold
-                pdf.set_font("Helvetica", 'B', 10)
-                pdf.multi_cell(0, 6, text=f"\n{speaker_name}:")
-                
-                # Speaker text with proper word wrapping
-                pdf.set_font("Helvetica", size=10)
-                words = speaker_text.split()
-                current_line = ""
-                for word in words:
-                    test_line = current_line + " " + word if current_line else word
-                    if len(test_line) > 75:  # Limit line length to prevent overflow
-                        if current_line:
-                            pdf.multi_cell(0, 6, text=current_line)
-                        current_line = word
-                    else:
-                        current_line = test_line
-                if current_line:
-                    pdf.multi_cell(0, 6, text=current_line)
-                pdf.ln(2)  # Space between utterances
+                try:
+                    # Clean text to handle encoding issues
+                    speaker_name = str(utterance.speaker).encode('latin-1', 'replace').decode('latin-1')
+                    speaker_text = str(utterance.text).encode('latin-1', 'replace').decode('latin-1')
+                    
+                    # Ensure minimum content
+                    if not speaker_name or not speaker_name.strip():
+                        speaker_name = "Speaker"
+                    if not speaker_text or not speaker_text.strip():
+                        speaker_text = "[No transcript available]"
+                    
+                    # Add to full transcript
+                    full_transcript_text += f"\n{speaker_name}: {speaker_text}\n"
+                    
+                except Exception as utterance_err:
+                    print(f"⚠️ Skipping utterance: {str(utterance_err)[:30]}")
+                    continue
+            
+            # Now write the entire transcript at once
+            pdf.set_font("Arial", size=10)
+            if full_transcript_text.strip():
+                pdf.multi_cell(0, 6, text=full_transcript_text)
+            else:
+                pdf.multi_cell(0, 6, text="[Transcript could not be processed]")
         else:
             # Fallback to plain text if no speaker labels
-            pdf.set_font("Helvetica", size=10)
-            plain_text = str(transcript_obj.text).encode('ascii', errors='ignore').decode('ascii').strip()
-            if not plain_text:
+            pdf.set_font("Arial", size=10)
+            plain_text = str(transcript_obj.text).encode('latin-1', 'replace').decode('latin-1')
+            
+            if not plain_text or not plain_text.strip():
                 plain_text = "[No transcript available]"
             
-            # Word wrap plain text
-            words = plain_text.split()
-            current_line = ""
-            for word in words:
-                test_line = current_line + " " + word if current_line else word
-                if len(test_line) > 75:
-                    if current_line:
-                        pdf.multi_cell(0, 8, text=current_line)
-                    current_line = word
-                else:
-                    current_line = test_line
-            if current_line:
-                pdf.multi_cell(0, 8, text=current_line)
+            pdf.multi_cell(0, 8, text=plain_text)
         
         # Save to temporary file first
         temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
@@ -664,57 +678,76 @@ def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_sup
                 except:
                     pass
         
+        print(f"✅ PDF generated successfully: {filename}")
         return result
         
     except Exception as e:
+        error_msg = f"PDF generation failed: {str(e)}"
+        print(f"❌ {error_msg}")
         return {
-            "error": f"PDF generation failed: {str(e)}",
+            "error": error_msg,
             "supabase_uploaded": False
         }
 
-# ✅ UPDATED: Format transcript with speaker labels for embedding
+
+# ✅ ALSO UPDATE: Format transcript function for consistency
 def format_transcript_with_speakers(transcript_obj) -> str:
     """Format transcript text with speaker labels for better context"""
-    if hasattr(transcript_obj, 'utterances') and transcript_obj.utterances:
-        formatted_text = ""
-        for utterance in transcript_obj.utterances:
-            formatted_text += f"\n{utterance.speaker}: {utterance.text}\n"
-        return formatted_text
-    else:
-        # Fallback to plain text
-        return transcript_obj.text
-
+    try:
+        if hasattr(transcript_obj, 'utterances') and transcript_obj.utterances:
+            formatted_text = ""
+            for utterance in transcript_obj.utterances:
+                try:
+                    speaker_name = str(utterance.speaker)
+                    speaker_text = str(utterance.text)
+                    formatted_text += f"\n{speaker_name}: {speaker_text}\n"
+                except:
+                    continue
+            return formatted_text if formatted_text.strip() else transcript_obj.text
+        else:
+            # Fallback to plain text
+            return transcript_obj.text
+    except Exception as e:
+        print(f"⚠️ Format error, using plain text: {str(e)[:50]}")
+        return transcript_obj.text if hasattr(transcript_obj, 'text') else ""
+        
 def transcript_to_pdf(text: str, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Legacy function for simple text to PDF with Supabase upload"""
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_margins(left=15, top=15, right=15)  # Add proper margins
-    pdf.set_auto_page_break(auto=True, margin=15)  # Auto page break
-    pdf.set_font("Arial", size=12)
-    pdf.multi_cell(0, 10, txt=text)
-    
-    temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
-    pdf.output(temp_pdf_path)
-    
-    result = {
-        "local_path": temp_pdf_path,
-        "supabase_uploaded": False
-    }
-    
-    if upload_to_supabase:
-        upload_result = supabase_manager.upload_pdf(temp_pdf_path, f"{filename}.pdf")
-        if upload_result["success"]:
-            result["supabase_uploaded"] = True
-            result["supabase_url"] = upload_result["url"]
-            result["supabase_path"] = upload_result["path"]
-            
-            # Clean up local temp file
-            try:
-                os.remove(temp_pdf_path)
-            except:
-                pass
-    
-    return result
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=25)
+        pdf.set_margins(25, 25, 25)
+        pdf.add_page()
+
+        pdf.set_font("Helvetica", size=10)
+
+        text = safe_text(text)
+
+        if text.strip():
+            pdf.multi_cell(0, 8, text)
+
+        pdf_bytes = pdf.output(dest="S").encode("latin-1", errors="ignore")
+
+        if upload_to_supabase:
+            supabase_client = SupabaseClient()
+            upload_res = supabase_client.upload_pdf_from_bytes(
+                pdf_bytes=pdf_bytes,
+                filename=f"{filename}.pdf"
+            )
+            return upload_res
+
+        return {
+            "success": True,
+            "pdf_bytes": pdf_bytes,
+            "supabase_uploaded": False
+        }
+
+    except Exception as e:
+        print(f"❌ PDF generation failed (plain): {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "supabase_uploaded": False
+        }
 
 def save_text_to_pdf(text: str, output_path: str):
     """Saves transcription text into a professional PDF format."""
