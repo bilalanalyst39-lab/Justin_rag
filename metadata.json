@@ -9,7 +9,7 @@
     "https://media.rss.com/highlyunlikely/feed.xml": {
       "title": "Highly Unlikely With Jonathan Flannes",
       "last_fetched": "853cdfab-abdd-4960-be25-b7919fb06fc9",
-      "processed_episodes": 5
+      "processed_episodes": 6
     }
   },
   "processed_episodes": {
@@ -47,6 +47,13 @@
       "processed_time": "8a16c71b-934b-4eaf-8b4b-e720c0e83e2a",
       "audio_url": "https://tqvfpadrnhqsptbwfkoz.supabase.co/storage/v1/object/public/audio-files/audios/Heroin%20and%20the%20Jewish%20Peckerwood%20Part%201_5a1a52.mp3",
       "pdf_url": "https://tqvfpadrnhqsptbwfkoz.supabase.co/storage/v1/object/public/transcripts/pdfs/Heroin%20and%20the%20Jewish%20Peckerwood%20Part%201_d604.pdf"
+    },
+    "0c60649b-4bf0-ebc0-e34e-a89b01e96d72": {
+      "feed_url": "https://media.rss.com/highlyunlikely/feed.xml",
+      "title": "Shot by a Terrorist - An Interview With Norman Casiano",
+      "processed_time": "8e977ade-3d80-482f-84f0-54ee8f3e0e04",
+      "audio_url": "https://tqvfpadrnhqsptbwfkoz.supabase.co/storage/v1/object/public/audio-files/audios/Shot%20by%20a%20Terrorist%20-%20An%20Interview%20With%20Norman%20Casiano_95d63a.mp3",
+      "pdf_url": "https://tqvfpadrnhqsptbwfkoz.supabase.co/storage/v1/object/public/transcripts/pdfs/Shot%20by%20a%20Terrorist%20-%20An%20Interview%20With%20Norman%20Casiano_082b.pdf"
     }
   }
 }
