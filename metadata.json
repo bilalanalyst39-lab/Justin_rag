@@ -1,0 +1,16 @@
+{
+  "files": {},
+  "rss_feeds": {
+    "https://media.rss.com/randomthoughts/feed.xml": {
+      "title": "Random Thoughts",
+      "last_fetched": "2cda0afd-7188-4eea-a387-494453ce37c6",
+      "processed_episodes": 0
+    },
+    "https://media.rss.com/highlyunlikely/feed.xml": {
+      "title": "Highly Unlikely With Jonathan Flannes",
+      "last_fetched": "853cdfab-abdd-4960-be25-b7919fb06fc9",
+      "processed_episodes": 0
+    }
+  },
+  "processed_episodes": {}
+}
