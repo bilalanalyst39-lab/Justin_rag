@@ -1781,9 +1781,6 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 raise Exception("Transcription timeout")
                             
                             if transcription_success and transcript.text:
-                                # Format transcript with speaker labels
-                                formatted_transcript = format_transcript_with_speakers(transcript)
-                                
                                 # Get speaker count
                                 speaker_count = 0
                                 if hasattr(transcript, 'utterances') and transcript.utterances:
@@ -1798,25 +1795,37 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                                 if episode.get('description'):
                                     content += f"Description: {episode['description']}\n"
                                 
-                                content += f"\nTranscript with Speaker Labels:\n{formatted_transcript}"
+                                # Try to format transcript with speaker labels, fall back to plain text
+                                try:
+                                    formatted_transcript = format_transcript_with_speakers(transcript)
+                                    content += f"\nTranscript with Speaker Labels:\n{formatted_transcript}"
+                                    print("✅ Transcript formatted with speaker labels")
+                                except Exception as format_err:
+                                    print(f"⚠️ Transcript formatting failed: {str(format_err)[:50]}")
+                                    content += f"\nTranscript:\n{transcript.text}"
+                                    print("📝 Using plain text transcript instead")
                                 
                                 pdf_filename = f"{safe_filename[:80]}_{uuid.uuid4().hex[:4]}"
                                 
-                                # Save PDF to Supabase
-                                pdf_result = transcript_to_pdf_with_speakers(
-                                    transcript,
-                                    pdf_filename,
-                                    upload_to_supabase=True
-                                )
-                                
-                                if pdf_result.get("supabase_uploaded"):
-                                    supabase_pdf_url = pdf_result["supabase_url"]
-                                    print(f"☁️ PDF uploaded to Supabase")
-                                elif pdf_result.get("error"):
-                                    print(f"⚠️ PDF generation failed: {pdf_result['error']}")
+                                # Try PDF generation, but continue even if it fails
+                                try:
+                                    pdf_result = transcript_to_pdf_with_speakers(
+                                        transcript,
+                                        pdf_filename,
+                                        upload_to_supabase=True
+                                    )
+                                    
+                                    if pdf_result.get("supabase_uploaded"):
+                                        supabase_pdf_url = pdf_result["supabase_url"]
+                                        print(f"☁️ PDF uploaded to Supabase")
+                                    elif pdf_result.get("error"):
+                                        print(f"⚠️ PDF generation failed: {pdf_result['error']}")
+                                        print("📝 Continuing without PDF - transcription still successful")
+                                    else:
+                                        print("⚠️ PDF generation skipped - continuing without PDF")
+                                except Exception as pdf_err:
+                                    print(f"⚠️ PDF generation error: {str(pdf_err)[:50]}")
                                     print("📝 Continuing without PDF - transcription still successful")
-                                else:
-                                    print("⚠️ PDF generation skipped - continuing without PDF")
                                 
                                 splitter = get_dynamic_splitter(content)
                                 chunks = splitter.create_documents([content], metadatas=[{
@@ -1974,18 +1983,28 @@ async def upload_file(file: UploadFile = File(...)):
             transcript = transcriber.transcribe(tmp_path, config=config)
             
             if transcript.status != aai.TranscriptStatus.error:
-                # Format with speaker labels
-                content = format_transcript_with_speakers(transcript)
+                # Try to format with speaker labels, fall back to plain text
+                try:
+                    content = format_transcript_with_speakers(transcript)
+                    print("✅ Transcript formatted with speaker labels")
+                except Exception as format_err:
+                    print(f"⚠️ Transcript formatting failed: {str(format_err)[:50]}")
+                    content = transcript.text
+                    print("📝 Using plain text transcript instead")
                 
                 # Create and upload PDF to Supabase
-                pdf_result = transcript_to_pdf_with_speakers(transcript, filename, upload_to_supabase=True)
-                if pdf_result.get("supabase_uploaded"):
-                    supabase_pdf_url = pdf_result["supabase_url"]
-                elif pdf_result.get("error"):
-                    print(f"⚠️ PDF generation failed: {pdf_result['error']}")
+                try:
+                    pdf_result = transcript_to_pdf_with_speakers(transcript, filename, upload_to_supabase=True)
+                    if pdf_result.get("supabase_uploaded"):
+                        supabase_pdf_url = pdf_result["supabase_url"]
+                    elif pdf_result.get("error"):
+                        print(f"⚠️ PDF generation failed: {pdf_result['error']}")
+                        print("📝 Continuing without PDF - transcription still successful")
+                    else:
+                        print("⚠️ PDF generation skipped - continuing without PDF")
+                except Exception as pdf_err:
+                    print(f"⚠️ PDF generation error: {str(pdf_err)[:50]}")
                     print("📝 Continuing without PDF - transcription still successful")
-                else:
-                    print("⚠️ PDF generation skipped - continuing without PDF")
             else:
                 content = ""
 
