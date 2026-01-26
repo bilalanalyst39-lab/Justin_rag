@@ -571,6 +571,8 @@ def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_sup
     """Create PDF with speaker diarization labels and upload to Supabase"""
     pdf = FPDF()
     pdf.add_page()
+    pdf.set_margins(left=15, top=15, right=15)  # Add proper margins
+    pdf.set_auto_page_break(auto=True, margin=15)  # Auto page break
     pdf.set_font("Arial", size=10)
     
     # Add title
@@ -639,6 +641,8 @@ def transcript_to_pdf(text: str, filename: str, upload_to_supabase: bool = True)
     """Legacy function for simple text to PDF with Supabase upload"""
     pdf = FPDF()
     pdf.add_page()
+    pdf.set_margins(left=15, top=15, right=15)  # Add proper margins
+    pdf.set_auto_page_break(auto=True, margin=15)  # Auto page break
     pdf.set_font("Arial", size=12)
     pdf.multi_cell(0, 10, txt=text)
     
@@ -669,6 +673,8 @@ def save_text_to_pdf(text: str, output_path: str):
     """Saves transcription text into a professional PDF format."""
     pdf = FPDF()
     pdf.add_page()
+    pdf.set_margins(left=15, top=15, right=15)  # Add proper margins
+    pdf.set_auto_page_break(auto=True, margin=15)  # Auto page break
     pdf.set_font("Arial", size=12)
     pdf.multi_cell(0, 10, txt=text)
     pdf.output(output_path)
@@ -1309,6 +1315,9 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
     temp_dir = tempfile.mkdtemp()
     
     processing_status[task_id]["errors"] = []
+    processing_status[task_id]["success"] = 0  # Transcribed episodes
+    processing_status[task_id]["metadata"] = 0  # Metadata only episodes
+    processing_status[task_id]["unsuccessful"] = 0  # Failed episodes
     
     for idx, feed_url in enumerate(feed_urls):
         try:
@@ -1501,6 +1510,7 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                         vs.add_documents(chunks)
                                     
                                     print(f"✅ Transcribed & Stored: {episode_title} ({len(chunks)} chunks, {speaker_count} speakers)")
+                                    processing_status[task_id]["success"] += 1  # Increment transcribed counter
                                     break
                                     
                             except Exception as transcribe_err:
@@ -1510,24 +1520,25 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                                 if "getaddrinfo failed" in error_detail or "Connection" in error_detail:
                                     print(f"⚠️ Network error (Attempt {transcription_attempt}/{transcription_retries}): {error_detail[:100]}")
                                     
-                                    if transcription_attempt < transcription_retries:
-                                        import time
-                                        wait_time = 10 * transcription_attempt
-                                        print(f"⏳ Waiting {wait_time}s before retry...")
-                                        time.sleep(wait_time)
-                                    else:
-                                        error_msg = f"Transcription failed after {transcription_retries} attempts: {episode_title} - Network error"
-                                        processing_status[task_id]["errors"].append(error_msg)
-                                        print(f"❌ {error_msg}")
-                                else:
-                                    error_msg = f"Transcription error: {episode_title} - {error_detail[:100]}"
-                                    processing_status[task_id]["errors"].append(error_msg)
-                                    print(f"❌ {error_msg}")
-                                    break
-                    else:
-                        content = f"Episode: {episode_title}\nAudio URL: {audio_url}\nFeed: {feed_info.get('title', 'Unknown')}"
-                        
                         if episode.get('description'):
+                            content += f"Description: {episode['description']}\n"
+
+                        content += f"\nTranscript with Speaker Labels:\n{formatted_transcript}"
+
+                        safe_filename = "".join(c for c in episode_title if c.isalnum() or c in (' ', '-', '_')).strip()
+                        safe_filename = safe_filename[:100]
+
+                        # Save PDF to Supabase
+                        pdf_result = transcript_to_pdf_with_speakers(
+                            transcript,
+                            f"{safe_filename}_{uuid.uuid4().hex[:4]}",
+                            upload_to_supabase=True
+                        )
+
+                        if pdf_result.get("supabase_uploaded"):
+                            supabase_pdf_url = pdf_result["supabase_url"]
+                            print(f" PDF uploaded to Supabase: {episode_title}")
+
                             content += f"\nDescription: {episode['description']}"
                         
                         splitter = get_dynamic_splitter(content)
@@ -1544,6 +1555,8 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                             vs = PineconeVectorStore.from_documents(chunks, embeddings, index_name=PINECONE_INDEX_NAME)
                         else:
                             vs.add_documents(chunks)
+                        
+                        processing_status[task_id]["metadata"] += 1  # Increment metadata counter
                     
                     metadata_manager.add_episode(
                         feed_url, 
@@ -1557,6 +1570,7 @@ def process_multiple_feeds_task(feed_urls: List[str], task_id: str):
                 except Exception as e:
                     error_msg = f"Episode error in {feed_url}: {str(e)}"
                     processing_status[task_id]["errors"].append(error_msg)
+                    processing_status[task_id]["unsuccessful"] += 1  # Increment failed counter
                 
                 finally:
                     # Clean up temp audio file
@@ -1835,7 +1849,6 @@ def process_deduplicated_episodes_task(feed_url: str, episodes: List[Dict], feed
                             
                             if "getaddrinfo failed" in error_detail or "Connection" in error_detail:
                                 print(f"⚠️ Network error (Attempt {transcription_attempt}/{transcription_retries}): {error_detail[:100]}")
-                                
                                 if transcription_attempt < transcription_retries:
                                     import time
                                     wait_time = 10 * transcription_attempt
