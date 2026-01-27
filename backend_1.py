@@ -72,6 +72,58 @@ aai.settings.api_key = ASSEMBLYAI_API_KEY
 # --- SUPABASE INITIALIZATION ---
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- timeout for audio ---
+def upload_audio_direct_api(audio_path: str, filename: str) -> Dict:
+    """Direct upload using Supabase REST API with custom timeout"""
+    try:
+        file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+        print(f"📤 Direct API upload: {file_size_mb:.1f}MB")
+        
+        # Read file
+        with open(audio_path, 'rb') as f:
+            file_data = f.read()
+        
+        # Supabase Storage REST API endpoint
+        url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET_AUDIO}/audios/{filename}"
+        
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "audio/mpeg",
+            "x-upsert": "true"
+        }
+        
+        # Upload with custom timeout (10 minutes for large files)
+        response = requests.post(
+            url,
+            data=file_data,
+            headers=headers,
+            timeout=600  # 10 minutes timeout
+        )
+        
+        if response.status_code in [200, 201]:
+            # Get public URL
+            public_url = f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET_AUDIO}/audios/{filename}"
+            
+            print(f"✅ Direct API upload successful: {filename} ({file_size_mb:.1f}MB)")
+            return {
+                "success": True,
+                "url": public_url,
+                "path": f"audios/{filename}",
+                "size_mb": file_size_mb
+            }
+        else:
+            error_text = response.text[:200] if response.text else "No error details"
+            raise Exception(f"Upload failed: {response.status_code} - {error_text}")
+            
+    except requests.exceptions.Timeout:
+        print(f"❌ Upload timeout after 10 minutes")
+        return {"success": False, "error": "Timeout", "url": None}
+    except Exception as e:
+        print(f"❌ Direct API upload error: {str(e)[:200]}")
+        return {"success": False, "error": str(e), "url": None}
+
+
+
 # --- SUPABASE HELPER FUNCTIONS ---
 class SupabaseManager:
     def __init__(self):
@@ -106,35 +158,10 @@ class SupabaseManager:
         except Exception as e:
             print(f"⚠️ Bucket creation info: {e}")
     
+
     def upload_audio(self, file_path: str, filename: str) -> Dict:
-        """Upload audio file to Supabase storage"""
-        try:
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-            
-            # Upload to Supabase
-            result = self.client.storage.from_(self.audio_bucket).upload(
-                f"audios/{filename}",
-                file_data,
-                {"content-type": "audio/mpeg"}
-            )
-            
-            # Get public URL
-            public_url = self.client.storage.from_(self.audio_bucket).get_public_url(f"audios/{filename}")
-            
-            print(f"✅ Uploaded audio to Supabase: {filename}")
-            return {
-                "success": True,
-                "url": public_url,
-                "path": f"audios/{filename}",
-                "bucket": self.audio_bucket
-            }
-        except Exception as e:
-            print(f"❌ Error uploading audio to Supabase: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+        """Upload audio file using direct REST API - optimized for large files"""
+        return upload_audio_direct_api(file_path, filename)
     
     def upload_pdf(self, file_path: str, filename: str) -> Dict:
         """Upload PDF file to Supabase storage"""
@@ -589,146 +616,211 @@ def safe_text(text: str, max_word_len: int = 40) -> str:
 
 # ✅ UPDATED: Speaker-aware PDF generation with Supabase upload
 # ✅ ULTRA-ROBUST: Multiple fallback strategies for production
-def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Create PDF with speaker diarization - fixed bytes issue"""
+# def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_supabase: bool = True) -> Dict:
+#     """Create properly formatted PDF with speaker labels and text wrapping"""
+#     try:
+#         from fpdf import FPDF
+        
+#         # Create PDF with A4 size
+#         pdf = FPDF(orientation='P', unit='mm', format='A4')
+#         pdf.add_page()
+        
+#         # Set proper margins for readable content
+#         pdf.set_margins(left=15, top=15, right=15)
+#         pdf.set_auto_page_break(auto=True, margin=15)
+        
+#         # Set font
+#         pdf.set_font("Courier", size=9)
+        
+#         # Add title
+#         pdf.set_font("Courier", 'B', 12)
+#         safe_title = ''.join(c for c in filename if ord(c) < 128)[:60]
+#         pdf.cell(0, 8, txt=f"Transcript: {safe_title}", ln=True, align='L')
+#         pdf.ln(3)
+        
+#         # Check if speaker labels available
+#         if hasattr(transcript_obj, 'utterances') and transcript_obj.utterances:
+#             speaker_count = len(set(u.speaker for u in transcript_obj.utterances))
+            
+#             pdf.set_font("Courier", 'B', 9)
+#             pdf.cell(0, 6, txt=f"Speakers: {speaker_count}", ln=True)
+#             pdf.ln(2)
+            
+#             # Process each utterance separately for better formatting
+#             pdf.set_font("Courier", size=9)
+            
+#             for idx, utterance in enumerate(transcript_obj.utterances):
+#                 try:
+#                     # Get speaker and text
+#                     speaker = str(utterance.speaker)
+#                     text = str(utterance.text)
+                    
+#                     # Clean to ASCII only
+#                     speaker = ''.join(c for c in speaker if ord(c) < 128).strip()
+#                     text = ''.join(c for c in text if ord(c) < 128).strip()
+                    
+#                     if not speaker:
+#                         speaker = "Speaker"
+#                     if not text:
+#                         continue
+                    
+#                     # Speaker name in bold (use cell for single line)
+#                     pdf.set_font("Courier", 'B', 9)
+#                     pdf.cell(0, 5, txt=f"{speaker}:", ln=True)
+                    
+#                     # Speaker text (use multi_cell for automatic wrapping)
+#                     pdf.set_font("Courier", size=9)
+                    
+#                     # CRITICAL: Split text into smaller chunks to avoid rendering issues
+#                     # FPDF has issues with very long strings in multi_cell
+#                     max_chars_per_chunk = 80  # Chars per line approximately
+#                     words = text.split()
+#                     current_line = ""
+                    
+#                     for word in words:
+#                         test_line = current_line + " " + word if current_line else word
+                        
+#                         # If line gets too long, write it and start new line
+#                         if len(test_line) > max_chars_per_chunk:
+#                             if current_line:
+#                                 # Use multi_cell with proper width (0 = full width minus margins)
+#                                 pdf.multi_cell(0, 4, txt=current_line, align='L')
+#                             current_line = word
+#                         else:
+#                             current_line = test_line
+                    
+#                     # Write remaining text
+#                     if current_line:
+#                         pdf.multi_cell(0, 4, txt=current_line, align='L')
+                    
+#                     # Add space between speakers
+#                     pdf.ln(2)
+                    
+#                 except Exception as utt_err:
+#                     print(f"⚠️ Skipping utterance {idx}: {str(utt_err)[:30]}")
+#                     continue
+            
+#             print(f"✅ Processed {len(transcript_obj.utterances)} utterances for PDF")
+            
+#         else:
+#             # Fallback: plain text without speaker labels
+#             pdf.set_font("Courier", size=9)
+#             plain_text = str(transcript_obj.text)
+#             plain_text = ''.join(c for c in plain_text if ord(c) < 128)
+            
+#             if plain_text.strip():
+#                 # Split into paragraphs and process
+#                 paragraphs = plain_text.split('\n\n')
+#                 for para in paragraphs:
+#                     if para.strip():
+#                         words = para.split()
+#                         current_line = ""
+                        
+#                         for word in words:
+#                             test_line = current_line + " " + word if current_line else word
+#                             if len(test_line) > 80:
+#                                 if current_line:
+#                                     pdf.multi_cell(0, 4, txt=current_line)
+#                                 current_line = word
+#                             else:
+#                                 current_line = test_line
+                        
+#                         if current_line:
+#                             pdf.multi_cell(0, 4, txt=current_line)
+#                         pdf.ln(2)
+#             else:
+#                 pdf.cell(0, 10, txt="[No transcript content]", ln=True)
+        
+#         # Save PDF
+#         temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
+#         pdf.output(temp_pdf_path)
+        
+#         result = {
+#             "local_path": temp_pdf_path,
+#             "supabase_uploaded": False
+#         }
+        
+#         # Upload to Supabase
+#         if upload_to_supabase:
+#             try:
+#                 upload_result = supabase_manager.upload_pdf(temp_pdf_path, f"{filename}.pdf")
+#                 if upload_result["success"]:
+#                     result["supabase_uploaded"] = True
+#                     result["supabase_url"] = upload_result["url"]
+#                     result["supabase_path"] = upload_result["path"]
+                    
+#                     # Clean up temp file
+#                     try:
+#                         os.remove(temp_pdf_path)
+#                     except:
+#                         pass
+#             except Exception as upload_err:
+#                 print(f"⚠️ PDF upload error: {str(upload_err)[:50]}")
+        
+#         print(f"✅ PDF generated: {filename}")
+#         return result
+        
+#     except Exception as e:
+#         error_msg = f"PDF error: {str(e)[:100]}"
+#         print(f"❌ {error_msg}")
+#         return {
+#             "error": error_msg,
+#             "supabase_uploaded": False,
+#             "local_path": None
+#         }
+def transcript_to_pdf_with_speakers(transcript_obj, filename: str, upload_to_supabase: bool = True):
     try:
-        from fpdf import FPDF
-        
-        pdf = FPDF(orientation='P', unit='mm', format='A4')
-        pdf.add_page()
-        
-        # Safe margins
-        left_margin = 15
-        right_margin = 15
-        pdf.set_left_margin(left_margin)
-        pdf.set_right_margin(right_margin)
-        pdf.set_top_margin(15)
+        pdf = FPDF("P", "mm", "A4")
+        pdf.set_margins(20, 15, 20)
         pdf.set_auto_page_break(auto=True, margin=15)
-        
-        effective_width = 210 - left_margin - right_margin
-        
-        # Use Helvetica
-        try:
-            pdf.set_font("Helvetica", size=9)
-        except:
-            pdf.set_font("Arial", size=9)
-        
-        # Title
-        try:
-            pdf.set_font("Helvetica", 'B', 11)
-            safe_title = ''.join(c for c in str(filename)[:40] if ord(c) < 128 and (c.isalnum() or c in ' -_'))
-            pdf.cell(effective_width, 8, txt=f"Transcript: {safe_title}", ln=True)
-            pdf.ln(3)
-            pdf.set_font("Helvetica", size=9)
-        except:
-            pass
-        
-        # Content
-        lines_written = 0
-        max_lines = 2000  # Limit for safety
-        
-        if hasattr(transcript_obj, 'utterances') and transcript_obj.utterances:
-            speaker_count = len(set(u.speaker for u in transcript_obj.utterances))
-            
-            try:
-                pdf.cell(effective_width, 5, txt=f"Speakers: {speaker_count}", ln=True)
-                pdf.ln(2)
-            except:
-                pass
-            
-            for utterance in transcript_obj.utterances:
-                if lines_written >= max_lines:
-                    break
-                    
-                try:
-                    speaker = str(getattr(utterance, 'speaker', 'Unknown'))
-                    text = str(getattr(utterance, 'text', ''))
-                    
-                    # Clean text
-                    speaker = ''.join(c for c in speaker if 32 <= ord(c) < 127)
-                    text = ''.join(c for c in text if 32 <= ord(c) < 127)
-                    
-                    if text.strip():
-                        line = f"{speaker}: {text}"
-                        if len(line) > 180:
-                            line = line[:180] + "..."
-                        
-                        pdf.multi_cell(effective_width, 5, txt=line)
-                        lines_written += 1
-                except:
-                    continue
-        else:
-            # Plain text fallback
-            try:
-                plain = str(transcript_obj.text)
-                plain = ''.join(c for c in plain if 32 <= ord(c) < 127)
-                
-                words = plain.split()
-                current_line = ""
-                
-                for word in words[:5000]:
-                    if lines_written >= max_lines:
-                        break
-                        
-                    if len(current_line) + len(word) < 140:
-                        current_line += word + " "
-                    else:
-                        try:
-                            pdf.multi_cell(effective_width, 5, txt=current_line.strip())
-                            lines_written += 1
-                        except:
-                            pass
-                        current_line = word + " "
-                
-                if current_line and lines_written < max_lines:
-                    try:
-                        pdf.multi_cell(effective_width, 5, txt=current_line.strip())
-                    except:
-                        pass
-            except:
-                pdf.cell(effective_width, 5, txt="Transcript unavailable", ln=True)
-        
-        # ✅ FIX: Don't encode - FPDF already returns bytes
-        pdf_bytes = pdf.output(dest='S')
-        
-        # Ensure it's bytes type
-        if isinstance(pdf_bytes, str):
-            pdf_bytes = pdf_bytes.encode('latin-1')
-        elif isinstance(pdf_bytes, bytearray):
-            pdf_bytes = bytes(pdf_bytes)
-        
-        result = {
-            "supabase_uploaded": False,
-            "local_path": None
-        }
-        
-        # Upload to Supabase
+        pdf.add_page()
+
+        usable_width = pdf.w - pdf.l_margin - pdf.r_margin
+
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.multi_cell(usable_width, 8, f"Transcript: {filename}")
+        pdf.ln(3)
+
+        pdf.set_font("Helvetica", size=10)
+
+        if not hasattr(transcript_obj, "utterances") or not transcript_obj.utterances:
+            raise ValueError("No speaker utterances found")
+
+        for utt in transcript_obj.utterances:
+            speaker = safe_text(str(utt.speaker)) or "Speaker"
+            text = safe_text(str(utt.text))
+
+            if not text.strip():
+                continue
+
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(usable_width, 6, f"{speaker}:")
+
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("Helvetica", size=10)
+            pdf.multi_cell(usable_width, 5, text)
+
+            pdf.ln(2)
+
+        temp_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
+        pdf.output(temp_path)
+
         if upload_to_supabase:
-            try:
-                upload_result = supabase_manager.upload_pdf_from_bytes(
-                    pdf_bytes, 
-                    f"{filename}.pdf"
-                )
-                if upload_result.get("success"):
-                    result["supabase_uploaded"] = True
-                    result["supabase_url"] = upload_result["url"]
-                    result["supabase_path"] = upload_result["path"]
-                    print(f"✅ PDF uploaded to Supabase: {filename}")
-            except Exception as upload_err:
-                print(f"⚠️ Supabase upload error: {str(upload_err)[:100]}")
-        
-        return result
-        
+            upload = supabase_manager.upload_pdf(temp_path, f"{filename}.pdf")
+            if not upload.get("success"):
+                raise RuntimeError("Supabase PDF upload failed")
+
+            os.remove(temp_path)
+            return {
+                "supabase_uploaded": True,
+                "supabase_url": upload["url"]
+            }
+
+        return {"local_path": temp_path}
+
     except Exception as e:
-        error_msg = f"PDF error: {str(e)[:100]}"
-        print(f"❌ {error_msg}")
-        return {
-            "error": error_msg,
-            "supabase_uploaded": False,
-            "local_path": None
-        }
-
-
+        raise RuntimeError(f"PDF_GENERATION_FAILED: {str(e)}")
 
 
 # ✅ SIMPLIFIED: Format function with ASCII-only output
@@ -757,49 +849,58 @@ def format_transcript_with_speakers(transcript_obj) -> str:
 
 # ✅ SIMPLIFIED: Legacy PDF function
 def transcript_to_pdf(text: str, filename: str, upload_to_supabase: bool = True) -> Dict:
-    """Simple text to PDF - fixed bytes issue"""
+    """Simple text to PDF with proper wrapping"""
     try:
-        from fpdf import FPDF
-        
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_left_margin(15)
-        pdf.set_right_margin(15)
+        pdf.set_margins(left=15, top=15, right=15)
         pdf.set_auto_page_break(auto=True, margin=15)
         
-        pdf.set_font("Helvetica", size=9)
+        pdf.set_font("Courier", size=9)
         
-        # Clean text
-        text = ''.join(c for c in str(text) if 32 <= ord(c) < 127)
+        # ASCII only
+        text = ''.join(c for c in text if ord(c) < 128)
         
-        # Write content
-        lines = text.split('\n')
-        for line in lines[:500]:  # Limit lines
-            if len(line) > 180:
-                line = line[:180]
-            try:
-                pdf.multi_cell(180, 5, txt=line)
-            except:
+        # Split and write with proper wrapping
+        paragraphs = text.split('\n\n') if '\n\n' in text else text.split('\n')
+        
+        for para in paragraphs[:500]:  # Limit paragraphs
+            if not para.strip():
+                pdf.ln(2)
                 continue
+            
+            words = para.split()
+            current_line = ""
+            
+            for word in words:
+                test_line = current_line + " " + word if current_line else word
+                if len(test_line) > 80:
+                    if current_line:
+                        pdf.multi_cell(0, 4, txt=current_line)
+                    current_line = word
+                else:
+                    current_line = test_line
+            
+            if current_line:
+                pdf.multi_cell(0, 4, txt=current_line)
+            pdf.ln(1)
         
-        # ✅ FIX: Handle bytes properly
-        pdf_bytes = pdf.output(dest='S')
-        if isinstance(pdf_bytes, bytearray):
-            pdf_bytes = bytes(pdf_bytes)
+        temp_pdf_path = os.path.join(TEMP_TRANSCRIPT_DIR, f"{filename}.pdf")
+        pdf.output(temp_pdf_path)
         
-        result = {"supabase_uploaded": False}
+        result = {"local_path": temp_pdf_path, "supabase_uploaded": False}
         
         if upload_to_supabase:
-            try:
-                upload_result = supabase_manager.upload_pdf_from_bytes(pdf_bytes, f"{filename}.pdf")
-                if upload_result.get("success"):
-                    result["supabase_uploaded"] = True
-                    result["supabase_url"] = upload_result["url"]
-            except Exception as e:
-                print(f"Upload error: {str(e)[:50]}")
+            upload_result = supabase_manager.upload_pdf(temp_pdf_path, f"{filename}.pdf")
+            if upload_result["success"]:
+                result["supabase_uploaded"] = True
+                result["supabase_url"] = upload_result["url"]
+                try:
+                    os.remove(temp_pdf_path)
+                except:
+                    pass
         
         return result
-        
     except Exception as e:
         return {"error": str(e), "supabase_uploaded": False}
 
