@@ -496,12 +496,14 @@ else:
                             # Single feed processing
                             feed_info = data.get("feed_info", {})
                             
+
                             if data.get("duplicate"):
                                 st.warning(f"⚠️ Feed already processed")
                                 st.info(f"📊 Already processed: {data.get('already_processed', 0)} episodes")
                             else:
                                 st.success(f"✅ Processing: {feed_info.get('title', 'Unknown Feed')}")
                                 
+                                # Initial summary metrics
                                 col1, col2, col3 = st.columns(3)
                                 with col1:
                                     st.metric("🆕 New Episodes", data.get("new_episodes_count", 0))
@@ -515,12 +517,11 @@ else:
                                     st.markdown("### 🔄 Processing Progress")
                                     st.info("🎙️ Transcribing with speaker diarization & uploading to cloud storage...")
                                     
-                                    # Live counters with 4 metrics
-                                    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+                                    # Live counters with 3 metrics
+                                    mcol1, mcol2, mcol3 = st.columns(3)
                                     transcribed_box = mcol1.empty()
-                                    metadata_box = mcol2.empty()
-                                    failed_box = mcol3.empty()
-                                    total_box = mcol4.empty()
+                                    failed_box = mcol2.empty()
+                                    total_box = mcol3.empty()
 
                                     progress_bar = st.progress(0)
                                     status_text = st.empty()
@@ -536,13 +537,11 @@ else:
                                             state = status_data.get("status", "")
 
                                             success_n = status_data.get("success", 0)
-                                            metadata_n = status_data.get("metadata", 0)
                                             failed_n = status_data.get("unsuccessful", 0)
 
                                             transcribed_box.metric("✅ Transcribed", success_n)
-                                            metadata_box.metric("📄 Metadata Only", metadata_n)
                                             failed_box.metric("❌ Failed", failed_n)
-                                            total_box.metric("📦 Processed", current)
+                                            total_box.metric("� Processed", current)
                                             
                                             if total > 0:
                                                 progress_val = min(current / total, 1.0)
@@ -555,7 +554,6 @@ else:
                                                 status_text.success(
                                                     f"🎊 Completed! "
                                                     f"✅ {success_n} transcribed with speakers | "
-                                                    f"📄 {metadata_n} metadata only | "
                                                     f"❌ {failed_n} failed"
                                                 )
                                                 
@@ -572,6 +570,7 @@ else:
                             # Multiple feeds processing
                             st.success(f"✅ Processing {len(urls_to_process)} feeds")
                             
+
                             if task_id:
                                 st.markdown("---")
                                 st.markdown("### 🔄 Processing Progress")
